@@ -139,6 +139,8 @@ export interface FlueManifest {
 	}>;
 }
 
+export type AttachedChannel = 'http' | 'websocket';
+
 const RUN_ROUTES_BY_ID: ReadonlyArray<readonly [string, HandleRunRouteOptions['action']]> = [
 	['/runs/:runId', 'get'],
 	['/runs/:runId/events', 'events'],
@@ -417,7 +419,7 @@ const workflowRouteHandler: MiddlewareHandler = async (c) => {
 		method: c.req.method,
 		name,
 		registeredWorkflows: workflows.map((workflow) => workflow.name),
-		httpWorkflows: workflows.filter((workflow) => workflow.channels.http).map((workflow) => workflow.name),
+		httpWorkflows: registeredWorkflowsForChannel(rt, 'http'),
 	});
 
 	if (rt.target === 'node') {
@@ -469,7 +471,7 @@ const agentRouteHandler: MiddlewareHandler = async (c) => {
 		method: c.req.method,
 		name,
 		id,
-		registeredAgents: registeredAgentsFor(rt),
+		registeredAgents: registeredAgentsForChannel(rt, 'http'),
 	});
 
 	if (rt.target === 'node') {
@@ -598,15 +600,16 @@ function normalizeRunRequest(
 	return new Request(url, request);
 }
 
-/**
- * Compute the set of agent names considered "registered" for purposes
- * of the agent route's name-validity check.
- *
-	 *   - Node: every entry in the direct handler map.
-	 *   - Cloudflare: generated DO classes are currently emitted for every
-	 *     discovered agent module.
-	 */
-function registeredAgentsFor(rt: FlueRuntime): readonly string[] {
-	if (rt.target === 'node') return Object.keys(rt.handlers ?? {});
-	return (rt.manifest?.agents ?? []).filter((agent) => agent.channels.http).map((agent) => agent.name);
+export function registeredAgentsForChannel(rt: FlueRuntime, channel: AttachedChannel): readonly string[] {
+	const declared = (rt.manifest?.agents ?? [])
+		.filter((agent) => agent.channels[channel] === true)
+		.map((agent) => agent.name);
+	if (channel !== 'http' || rt.target !== 'node') return declared;
+	return [...new Set([...declared, ...Object.keys(rt.handlers ?? {})])];
+}
+
+export function registeredWorkflowsForChannel(rt: FlueRuntime, channel: AttachedChannel): readonly string[] {
+	return (rt.manifest?.workflows ?? [])
+		.filter((workflow) => workflow.channels[channel] === true)
+		.map((workflow) => workflow.name);
 }

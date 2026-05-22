@@ -51,6 +51,10 @@ export type {
 	DispatchRequest,
 	ReceiveContext,
 	DirectAgentPayload,
+	FluePublicError,
+	AgentWebSocketClientMessage,
+	WorkflowWebSocketClientMessage,
+	WebSocketServerMessage,
 } from './types.ts';
 
 export { Type } from '@earendil-works/pi-ai';

@@ -2,7 +2,7 @@
 
 import type { FlueContextInternal } from '../client.ts';
 import { InvalidRequestError, parseJsonBody, RunEventTooLargeError, toHttpResponse } from '../errors.ts';
-import type { CreatedAgent, DirectAgentPayload, FlueEvent } from '../types.ts';
+import type { CreatedAgent, DirectAgentPayload, FlueEvent, FlueEventCallback } from '../types.ts';
 import type { DispatchInput, DispatchProcessor } from './dispatch-queue.ts';
 import { generateRunId, generateWorkflowRunId } from './ids.ts';
 import type { RunOwner, RunRegistry } from './run-registry.ts';
@@ -363,6 +363,27 @@ interface ModeOptions {
 	runRegistry?: RunRegistry;
 }
 
+export interface InvokeAttachedOptions {
+	owner: RunOwner;
+	id: string;
+	runId: string;
+	handler: AgentHandler | WorkflowHandler;
+	payload: unknown;
+	request: Request;
+	createContext: CreateContextFn;
+	runHandler?: RunHandlerFn;
+	onEvent?: FlueEventCallback;
+	emitIdleOnComplete?: boolean;
+	runStore?: RunStore;
+	runSubscribers?: RunSubscriberRegistry;
+	runRegistry?: RunRegistry;
+}
+
+export interface AttachedInvocationResult {
+	runId: string;
+	result: unknown;
+}
+
 interface WebhookOptions {
 	label: string;
 	owner: RunOwner;
@@ -446,24 +467,11 @@ async function runWebhookMode(opts: WebhookOptions): Promise<Response> {
 export const SSE_HEARTBEAT_MS = 15_000;
 
 function runSseMode(opts: ModeOptions): Response {
-	const {
-		owner,
-		id,
-		runId,
-		handler,
-		payload,
-		request,
-		createContext,
-		runHandler,
-		runStore,
-		runSubscribers,
-		runRegistry,
-	} = opts;
+	const { runId } = opts;
 
 	const { readable, writable } = new TransformStream();
 	const writer = writable.getWriter();
 	const encoder = new TextEncoder();
-	let isIdle = false;
 	let closed = false;
 
 	// Writes after client disconnect are intentionally dropped; the handler
@@ -495,41 +503,16 @@ function runSseMode(opts: ModeOptions): Response {
 	}, SSE_HEARTBEAT_MS);
 
 	(async () => {
-		let ctx: FlueContextInternal | undefined;
 		try {
-			const lifecycle = await createRunLifecycle({
-				owner,
-				id,
-				runId,
-				payload,
-				request,
-				createContext,
-				runStore,
-				runSubscribers,
-				runRegistry,
+			await invokeAttached({
+				...opts,
+				onEvent: (event) => writeSSE(event, event.type),
+				emitIdleOnComplete: true,
 			});
-			ctx = lifecycle.ctx;
-			ctx.setEventCallback((event) => {
-				if (event.type === 'idle') isIdle = true;
-				writeSSE(event, event.type).catch(() => {});
-			});
-
-			try {
-				const activeCtx = ctx;
-				await withRunLifecycle(lifecycle, async () => {
-					try {
-						return await runHandler(activeCtx, handler);
-					} finally {
-						if (!isIdle) activeCtx.emitEvent({ type: 'idle' });
-					}
-				});
-			} catch {
-			}
 		} catch (error) {
 			await writeSSE({ message: error instanceof Error ? error.message : String(error) }, 'error');
 		} finally {
 			clearInterval(heartbeat);
-			ctx?.setEventCallback(undefined);
 			closed = true;
 			try {
 				await writer.close();
@@ -549,37 +532,43 @@ function runSseMode(opts: ModeOptions): Response {
 }
 
 async function runSyncMode(opts: ModeOptions): Promise<Response> {
-	const {
-		owner,
-		id,
-		runId,
-		handler,
-		payload,
-		request,
-		createContext,
-		runHandler,
-		runStore,
-		runSubscribers,
-		runRegistry,
-	} = opts;
+	const invocation = await invokeAttached(opts);
+	return new Response(
+		JSON.stringify({ result: invocation.result === undefined ? null : invocation.result, _meta: { runId: invocation.runId } }),
+		{ headers: { 'content-type': 'application/json', 'X-Flue-Run-Id': invocation.runId } },
+	);
+}
+
+export async function invokeAttached(opts: InvokeAttachedOptions): Promise<AttachedInvocationResult> {
 	const lifecycle = await createRunLifecycle({
-		owner,
-		id,
-		runId,
-		payload,
-		request,
-		createContext,
-		runStore,
-		runSubscribers,
-		runRegistry,
+		owner: opts.owner,
+		id: opts.id,
+		runId: opts.runId,
+		payload: opts.payload,
+		request: opts.request,
+		createContext: opts.createContext,
+		runStore: opts.runStore,
+		runSubscribers: opts.runSubscribers,
+		runRegistry: opts.runRegistry,
 	});
 	const { ctx } = lifecycle;
+	const runHandler = opts.runHandler ?? defaultRunHandler;
+	let didEmitIdle = false;
+	if (opts.onEvent || opts.emitIdleOnComplete) {
+		ctx.setEventCallback((event) => {
+			if (event.type === 'idle') didEmitIdle = true;
+			return opts.onEvent?.(event);
+		});
+	}
 	try {
-		const result = await withRunLifecycle(lifecycle, () => runHandler(ctx, handler));
-		return new Response(
-			JSON.stringify({ result: result === undefined ? null : result, _meta: { runId } }),
-			{ headers: { 'content-type': 'application/json', 'X-Flue-Run-Id': runId } },
-		);
+		const result = await withRunLifecycle(lifecycle, async () => {
+			try {
+				return await runHandler(ctx, opts.handler);
+			} finally {
+				if (opts.emitIdleOnComplete && !didEmitIdle) ctx.emitEvent({ type: 'idle' });
+			}
+		});
+		return { runId: opts.runId, result };
 	} finally {
 		ctx.setEventCallback(undefined);
 	}

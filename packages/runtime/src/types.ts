@@ -48,6 +48,82 @@ export interface DirectAgentPayload {
 	session?: string;
 }
 
+export interface FluePublicError {
+	type: string;
+	message: string;
+	details: string;
+	dev?: string;
+	meta?: Record<string, unknown>;
+}
+
+export type AgentWebSocketClientMessage =
+	| {
+			version: 1;
+			type: 'prompt';
+			requestId: string;
+			message: string;
+			session?: string;
+	  }
+	| {
+			version: 1;
+			type: 'ping';
+			requestId?: string;
+	  };
+
+export interface WorkflowWebSocketClientMessage {
+	version: 1;
+	type: 'invoke';
+	requestId: string;
+	payload?: unknown;
+}
+
+export type WebSocketServerMessage =
+	| {
+			version: 1;
+			type: 'ready';
+			target: 'agent';
+			name: string;
+			instanceId: string;
+	  }
+	| {
+			version: 1;
+			type: 'ready';
+			target: 'workflow';
+			name: string;
+	  }
+	| {
+			version: 1;
+			type: 'started';
+			requestId: string;
+			runId: string;
+	  }
+	| {
+			version: 1;
+			type: 'event';
+			requestId: string;
+			runId: string;
+			event: FlueEvent;
+	  }
+	| {
+			version: 1;
+			type: 'result';
+			requestId: string;
+			runId: string;
+			result: unknown;
+	  }
+	| {
+			version: 1;
+			type: 'error';
+			requestId?: string;
+			runId?: string;
+			error: FluePublicError;
+	  }
+	| {
+			version: 1;
+			type: 'pong';
+			requestId?: string;
+	  };
+
 export interface AgentCreateContext<TPayload = unknown, TEnv = Record<string, any>> {
 	readonly id: string;
 	readonly env: TEnv;
