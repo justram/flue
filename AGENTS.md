@@ -24,7 +24,7 @@ Use `harness` as the variable name for the return value of `init()`. Agents have
 ## Project Structure
 
 - `packages/runtime/` — Runtime library (`@flue/runtime`). Session management, agent harness, tools, sandbox plumbing. What a built Flue app depends on.
-- `packages/cli/` — CLI + build/dev tooling (`@flue/cli`). Owns `flue dev`/`run`/`build`/`init`/`add`/`logs`, the esbuild plugins, agent-file parsing, env-file loading, and the `flue.config.ts` resolver. Eventually rolls up into the `flue` npm package; for now `defineConfig` is imported via `@flue/cli/config`.
+- `packages/cli/` — CLI + build/dev tooling (`@flue/cli`). Owns `flue dev`/`run`/`build`/`init`/`add`/`logs`, the shared Vite build graph and target integration, topology discovery, env-file loading, and the `flue.config.ts` resolver. Eventually rolls up into the `flue` npm package; for now `defineConfig` is imported via `@flue/cli/config`.
 - `examples/hello-world/` — Test root with example agents covering the runtime's surfaces.
 - `examples/cloudflare/` — Test root for Cloudflare-specific features (Workers AI binding, etc.).
 

@@ -1,12 +1,10 @@
 import { cloudflare } from '@cloudflare/vite-plugin';
-import * as esbuild from 'esbuild';
 import * as fs from 'node:fs';
 import { builtinModules, createRequire } from 'node:module';
 import * as path from 'node:path';
 import { packageUpSync } from 'package-up';
 import { CloudflarePlugin } from './build-plugin-cloudflare.ts';
 import { NodePlugin } from './build-plugin-node.ts';
-import { bundleSkillImports } from './skill-bundle.ts';
 import { skillReferencePlugin } from './vite-skill-reference-plugin.ts';
 import type {
 	AgentInfo,
@@ -120,64 +118,14 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 	};
 
 	const serverCode = await plugin.generateEntryPoint(ctx);
-	const bundleStrategy = plugin.bundle ?? 'esbuild';
+	const bundleStrategy = plugin.bundle;
 
-	if (bundleStrategy === 'esbuild') {
-		// Single-bundle mode: the plugin produces a TS entry, esbuild
-		// inlines/externalizes deps, output is server.mjs in the build dir.
-		const entryPath = path.join(output, '_entry_server.ts');
-		const bundledEntryPath = path.join(output, '_entry_server.bundled.js');
-		const outPath = path.join(output, 'server.mjs');
-
-		fs.writeFileSync(entryPath, serverCode, 'utf-8');
-		await bundleSkillImports(entryPath, bundledEntryPath);
-
-		try {
-			const nodePathsSet = collectNodePaths(root);
-			const { external: pluginExternal = [], ...pluginEsbuildOpts } = plugin.esbuildOptions
-				? plugin.esbuildOptions(ctx)
-				: {};
-
-			// User's direct deps are externalized (resolved at runtime); Flue infra gets bundled
-			const userExternals = getUserExternals(root);
-
-			await esbuild.build({
-				entryPoints: [bundledEntryPath],
-				bundle: true,
-				outfile: outPath,
-				format: 'esm',
-				external: [...pluginExternal, ...userExternals],
-				nodePaths: [...nodePathsSet],
-				logLevel: 'warning',
-				loader: { '.ts': 'ts', '.node': 'empty' },
-				treeShaking: true,
-				sourcemap: true,
-				...pluginEsbuildOpts,
-			});
-			console.log(`[flue] Built: ${outPath}`);
-			// esbuild always writes; we treat this path as "changed" without
-			// trying to compute byte-equality across reloads.
-			anyChanged = true;
-		} finally {
-			try {
-				fs.unlinkSync(entryPath);
-			} catch {
-				/* ignore */
-			}
-			try {
-				fs.unlinkSync(bundledEntryPath);
-			} catch {
-				/* ignore */
-			}
-		}
-	} else if (bundleStrategy === 'vite') {
+	if (bundleStrategy === 'vite') {
 		const entryPath = path.join(output, '_entry_server.ts');
 		const outPath = path.join(output, 'server.mjs');
 		fs.writeFileSync(entryPath, serverCode, 'utf-8');
 		try {
-			const { external: pluginExternal = [] } = plugin.esbuildOptions
-				? plugin.esbuildOptions(ctx)
-				: {};
+			const pluginExternal = plugin.external ?? [];
 			const userExternals = getUserExternals(root);
 			const { build: viteBuild } = await import('vite');
 			const sharedViteConfig = createSharedViteConfig(root, [entryPath]);
@@ -239,15 +187,13 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 		console.log(`[flue] Built Cloudflare application: ${output}`);
 		anyChanged = true;
 	} else if (bundleStrategy === 'none') {
-		// Pass-through mode: write the entry as-is. A downstream tool (e.g.
-		// wrangler) handles bundling. We don't even glance at `esbuildOptions`.
+		// Pass-through mode: write the entry as-is for an internal/test consumer.
 		if (!plugin.entryFilename) {
 			throw new Error(
 				`[flue] Plugin "${plugin.name}" set bundle: 'none' but did not provide entryFilename.`,
 			);
 		}
 		const outPath = path.join(output, plugin.entryFilename);
-		const bundledOutPath = outPath.replace(/\.(ts|js|mts|mjs)$/i, '.bundled.js');
 		// Skip the write if content is byte-identical to what's already on
 		// disk. This matters for `flue dev`, where downstream watchers (like
 		// wrangler's bundler) may key on file mtime and would otherwise reload
@@ -261,7 +207,6 @@ export async function build(options: BuildOptions): Promise<BuildResult> {
 		} else {
 			console.log(`[flue] Entry unchanged: ${outPath}`);
 		}
-		await bundleSkillImports(outPath, bundledOutPath);
 	} else {
 		throw new Error(`[flue] Unknown bundle strategy: ${bundleStrategy}`);
 	}

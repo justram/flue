@@ -65,9 +65,8 @@ export interface BuildContext {
  * Controls the build output format for a target platform.
  *
  * A plugin can ship a JavaScript artifact bundled through the shared Vite
- * graph, use the retained legacy esbuild strategy for a custom integration,
- * or hand source entry generation to platform tooling. Node uses shared Vite
- * output; Cloudflare migrates to the official Vite integration separately.
+ * graph, use the official Cloudflare Vite integration, or write a source
+ * entry for an internal/test consumer.
  */
 export interface BuildPlugin {
 	name: string;
@@ -83,19 +82,18 @@ export interface BuildPlugin {
 	 *     Vite authored-module graph.
 	 *   - `'vite-cloudflare'`: write the Cloudflare source entry used by the
 	 *     official Cloudflare Vite integration.
-	 *   - `'esbuild'` (default): run the retained esbuild bundling strategy.
-	 *   - `'none'`: write a source entry for a downstream bundler; requires
-	 *     `entryFilename` to identify that target-specific entry input.
+	 *   - `'none'`: write a source entry without processing authored imports;
+	 *     intended for internal/test discovery consumers.
 	 */
-	bundle?: 'esbuild' | 'vite' | 'vite-cloudflare' | 'none';
+	bundle: 'vite' | 'vite-cloudflare' | 'none';
 	/**
 	 * The filename to use for an emitted source entry under `dist/`. Required
 	 * when `bundle === 'none'` or `bundle === 'vite-cloudflare'`. Node bundled
 	 * output is always `server.mjs` and ignores this field.
 	 */
 	entryFilename?: string;
-	/** esbuild options; Node Vite builds also reuse `external` dependency entries. */
-	esbuildOptions?(ctx: BuildContext): Record<string, any>;
+	/** Package names that Vite should preserve as external runtime dependencies. */
+	external?: string[];
 	/**
 	 * Additional files to write to the output directory (`ctx.output`).
 	 * Keys are filenames relative to `output` (e.g. `wrangler.jsonc`,

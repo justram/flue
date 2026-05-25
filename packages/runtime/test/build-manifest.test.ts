@@ -28,6 +28,7 @@ describe('build discovery outputs', () => {
 
 		await expect(build({ root, plugin: discoveryOnlyPlugin })).resolves.toEqual({ changed: true });
 		expect(fs.existsSync(path.join(root, 'dist', 'manifest.json'))).toBe(false);
+		expect(fs.existsSync(path.join(root, 'dist', 'server.bundled.js'))).toBe(false);
 		expect(fs.readFileSync(path.join(root, 'dist', 'server.mjs'), 'utf-8')).toContain('assistant');
 		expect(fs.readFileSync(path.join(root, 'dist', 'server.mjs'), 'utf-8')).toContain('job');
 	});
