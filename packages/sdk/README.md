@@ -21,7 +21,9 @@ Flue isn't another AI SDK. It's a proper runtime-agnostic framework — think As
 
 ## Examples
 
-Message-driven agents receive direct HTTP or WebSocket messages at `/agents/:name/:id`; authored provider channel apps mount beneath `/channels/:channel/*` and agent-owned `channel.on(...)` listeners explicitly `dispatch(...)` work. See [Message-Driven Agents](docs/message-driven-agents.md) for these surfaces and inbound-only channel examples.
+Message-driven agents receive direct HTTP or WebSocket messages at `/agents/:name/:id`; authored provider channel apps mount beneath `/channels/:channel/*` and agent-owned `channel.on(...)` listeners explicitly `dispatch(...)` work. See [Message-Driven Agents](docs/message-driven-agents.md) for these surfaces and inbound-only channel examples. Runnable WebSocket examples are available for [Node](examples/node-websocket) and [Cloudflare](examples/cloudflare-websocket).
+
+For external tracing, metrics, and error reporting, see [Observability](apps/docs/src/content/docs/guide/observability.md), the public `observe(...)`-based [Braintrust tracing example](examples/braintrust), and the [Sentry error-reporting example](examples/sentry).
 
 ### Quickstart
 
@@ -245,11 +247,14 @@ export async function run({ init, payload, env }: FlueContext) {
 
 ## Agents, Harnesses, And Sessions
 
-An agent is the source file in `agents/<name>.ts`. For HTTP agents, the URL `<id>` segment identifies the agent instance: the durable runtime scope for one customer, repo, conversation space, or other caller-defined boundary.
+An agent is the source file in `agents/<name>.ts`. For attached HTTP or WebSocket agents, the URL `<id>` segment identifies the agent instance: the durable runtime scope for one customer, repo, conversation space, or other caller-defined boundary.
 
 ```txt
 POST /agents/<agent-name>/<id>
+GET  /agents/<agent-name>/<id>  (Upgrade: websocket)
 ```
+
+Declare `websocket()` to open a long-lived SDK connection to that stable instance. One agent socket can issue sequential prompts and select a session per prompt; workflow sockets are one invocation per connection.
 
 In workflows, `init(createdAgent)` creates a harness: a configured handle for model defaults, tools, sandbox, filesystem, and sessions. Pass `init(createdAgent, { name })` when one workflow needs multiple isolated harness scopes. In agent modules, the runtime initializes the module's default `createAgent(...)` export when a message arrives.
 
@@ -307,6 +312,29 @@ await session.prompt('Review the latest changes.');
 await session.task('Research related issues.', { agent: 'researcher' });
 ```
 
+### Delegated Agents
+
+Use `session.delegate()` when authored code needs an awaited answer from another deployed agent in the same built application. The target must be a default-exported `createAgent(...)` value discovered from `agents/<name>.ts`, and runs with its own configuration and sandbox in a generated one-shot session.
+
+```ts
+import reviewer from '../agents/reviewer.ts';
+
+const result = await session.delegate('Review this API boundary.', {
+  agent: reviewer,
+  id: 'architecture-reviewer',
+});
+```
+
+Choose the primitive that matches the ownership boundary:
+
+| Method | Work runs in | Completion |
+| --- | --- | --- |
+| `session.task()` | A child session in the current harness and sandbox | Awaits the result |
+| `session.delegate()` | Another discovered deployed agent instance in an isolated generated session | Awaits the result |
+| `dispatch()` | A persistent session owned by another discovered deployed agent instance | Returns an acceptance receipt |
+
+Delegation does not require the target agent to expose HTTP or WebSocket channels, does not write to its default persistent session, and does not create a workflow run. It is attached execution: cancellation and cleanup are best effort if the caller or runtime disappears before completion.
+
 ### Provider Settings
 
 Use `providers` when model traffic needs provider-specific runtime settings,
@@ -335,9 +363,25 @@ export default {
 };
 ```
 
+### Imported Agent Skills
+
+Workspace skills at `<cwd>/.agents/skills/<name>/SKILL.md` are discovered at runtime and activated by name with `session.skill('name')`. Static skill imports are packaged build dependencies:
+
+```ts
+import review from '../skills/review/SKILL.md' with { type: 'skill' };
+
+const agent = createAgent(() => ({ model: 'anthropic/claude-sonnet-4-6', skills: [review] }));
+const harness = await init(agent);
+const session = await harness.session();
+await session.skill('review');
+// Or activate an imported reference directly: await session.skill(review);
+```
+
+The static import exposes a lightweight `SkillReference`, not skill contents. Vite validates the spec-compliant `SKILL.md` and packages every permitted supporting file in its skill directory, not only `scripts/`, `references/`, and `assets/`. Packaged files become readable for direct reference activation and for operations on an agent that registers the reference in `skills`; an unregistered import alone does not expose its contents to ordinary prompts. Files likely to contain secrets or private keys, including `.env*`, `.dev.vars*`, credential files, key files, `.aws/`, `.ssh/`, and `.gnupg/`, reject the build rather than being deployed. Keep credentials outside skill directories.
+
 ### Custom Virtual Sandboxes
 
-For most agents, use the built-in virtual sandbox or `sandbox: local()` (Node target only). If you need to customize just-bash directly, pass a Bash factory. The factory must return a fresh Bash-like runtime each time; share the filesystem object in the closure to persist files across sessions and prompts.
+For most agents, use the built-in virtual sandbox or `sandbox: local()` (Node target only). The generated default sandbox is supplied by `@flue/runtime`; applications do not declare `just-bash` unless authored application code imports it directly. If you need to customize just-bash directly, add `just-bash` as an application dependency and pass a Bash factory. The factory must return a fresh Bash-like runtime each time; share the filesystem object in the closure to persist files across sessions and prompts.
 
 ```ts
 import { Bash, InMemoryFs } from 'just-bash';
@@ -364,7 +408,7 @@ flue add https://e2b.dev --category sandbox | claude   # build one from scratch 
 
 The CLI fetches the markdown for the named connector and prints it to stdout when run by an agent (or with `--print`), or shows a short copyable `flue add ... | <agent>` recipe when run by a human in a terminal. Your agent reads the markdown and writes a small TypeScript adapter into `./.flue/connectors/<name>.ts` (or `./connectors/<name>.ts` for the root layout).
 
-## Running Agents
+## Running and Connecting
 
 ### Local Development (`flue dev`)
 
@@ -377,7 +421,21 @@ flue dev --target cloudflare    # Cloudflare Vite/workerd dev server
 
 Defaults to port `3583` ("FLUE" on a phone keypad). Override with `--port`.
 
-`flue dev --target cloudflare` requires `wrangler` as a peer dependency in your project (`npm install --save-dev wrangler`).
+```ts
+import { createFlueClient } from '@flue/sdk';
+
+const client = createFlueClient({ baseUrl: 'http://localhost:3583' });
+const chat = client.agents.connect('chat', 'customer-123');
+await chat.ready;
+await chat.prompt('Hello', { session: 'support' });
+chat.close();
+
+const job = client.workflows.connect('summarize');
+await job.ready;
+await job.invoke({ text: 'Summarize me' });
+```
+
+With a custom `app.ts`, authenticate both agent and workflow WebSocket paths through ordinary Hono middleware before `app.route('/api', flue())`; the same routing model works on Node and Cloudflare. Configure `websocketBasePath: '/api'` for the custom mount and `websocketUrl: (url) => { url.searchParams.set('token', socketToken); return url; }` for URL-carried or signed handshake authentication. HTTP `token` and `headers` options do not automatically apply to WebSocket upgrades; browsers should use cookies or application-designed URL authentication, while Node clients needing implementation-specific headers can provide a custom `websocket` factory. Without a custom app, protect production socket endpoints through an authenticated upstream gateway or proxy. Avoid header-mutating middleware around WebSocket upgrade routes. `flue dev --target cloudflare` requires `wrangler` as a peer dependency in your project (`npm install --save-dev wrangler`).
 
 #### Loading environment variables
 
@@ -391,11 +449,19 @@ Repeatable; later files override earlier ones on key collision. Shell-set env va
 
 ### Trigger From the CLI (`flue run`)
 
-Build and run any workflow locally, perfect for running in CI or for one-shot scripted invocations. Production-shaped — builds the deployable artifact and starts it once.
+Build and run any workflow locally, perfect for CI or one-shot scripted invocations. The CLI invokes the built Node artifact through a private child-process channel, independent of public workflow routes and middleware.
 
 ```bash
 flue run hello --target node \
   --payload '{"text": "Hello world", "language": "French"}'
+```
+
+### Connect to an Agent Instance (`flue connect`)
+
+Open an interactive local session with an agent instance. The built Node child remains alive for the connection so repeated prompts can share in-memory session state.
+
+```bash
+flue connect chat customer-123 --target node --session support
 ```
 
 ### Trigger From HTTP Endpoint (`flue build`)
