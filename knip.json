@@ -11,12 +11,12 @@
 			"ignoreDependencies": ["bgproc", "just-bash"]
 		},
 		"examples/*": {
-			"entry": [".flue/{app,agents/*,workflows/*}.{ts,mts,js,mjs}"],
-			"project": [".flue/**/*.{ts,mts,js,mjs}"]
+			"entry": ["{src/{app,agents/*,workflows/*},flue.config}.{ts,mts,js,mjs}"],
+			"project": ["src/**/*.{ts,mts,js,mjs}"]
 		},
 		"examples/node-websocket": {
-			"entry": [".flue/{app,agents/*,workflows/*}.{ts,mts,js,mjs}", "flue.config.ts"],
-			"project": [".flue/**/*.{ts,mts,js,mjs}"],
+			"entry": ["{src/{app,agents/*,workflows/*},flue.config}.{ts,mts,js,mjs}"],
+			"project": ["src/**/*.{ts,mts,js,mjs}"],
 			"ignoreDependencies": ["@flue/sdk"]
 		},
 		"apps/www": {

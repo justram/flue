@@ -6,9 +6,7 @@ export function resolveSourceRoot(root: string): string {
 		const candidate = path.join(root, sourceDirectory);
 		try {
 			if (fs.statSync(candidate).isDirectory()) return candidate;
-		} catch {
-			continue;
-		}
+		} catch {}
 	}
 	return root;
 }
