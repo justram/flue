@@ -30,14 +30,29 @@ export interface DirectAgentPayload {
 	session?: string;
 }
 
+/**
+ * Caller-safe error details exposed by Flue transports. Unknown failures are
+ * converted to a generic `internal_error` payload without leaking their
+ * original message.
+ */
 export interface FluePublicError {
+	/** Stable machine-readable error category. */
 	type: string;
+	/** Short caller-facing summary. */
 	message: string;
+	/** Caller-facing explanation. */
 	details: string;
+	/** Additional local-development guidance when available. */
 	dev?: string;
+	/** Structured error-specific metadata when available. */
 	meta?: Record<string, unknown>;
 }
 
+/**
+ * Protocol version 1 messages accepted by an attached-agent WebSocket. Agent
+ * sockets can process sequential prompts. Use `requestId` to correlate
+ * prompt-scoped messages.
+ */
 export type AgentWebSocketClientMessage =
 	| {
 			version: 1;
@@ -52,6 +67,10 @@ export type AgentWebSocketClientMessage =
 			requestId?: string;
 	  };
 
+/**
+ * Protocol version 1 invocation accepted by a workflow WebSocket. Workflow
+ * sockets accept one invocation and close after completion or failure.
+ */
 export interface WorkflowWebSocketClientMessage {
 	version: 1;
 	type: 'invoke';
@@ -59,6 +78,7 @@ export interface WorkflowWebSocketClientMessage {
 	payload?: unknown;
 }
 
+/** Connection- or request-scoped WebSocket failure. */
 export type WebSocketErrorMessage = {
 	version: 1;
 	type: 'error';
@@ -66,6 +86,7 @@ export type WebSocketErrorMessage = {
 	error: FluePublicError;
 };
 
+/** Protocol version 1 messages emitted by an attached-agent WebSocket. */
 export type AgentWebSocketServerMessage =
 	| {
 			version: 1;
@@ -98,6 +119,10 @@ export type AgentWebSocketServerMessage =
 			requestId?: string;
 	  };
 
+/**
+ * Protocol version 1 messages emitted by a workflow WebSocket. `started`
+ * reports an admitted workflow invocation before workflow events are delivered.
+ */
 export type WorkflowWebSocketServerMessage =
 	| {
 			version: 1;
@@ -126,6 +151,7 @@ export type WorkflowWebSocketServerMessage =
 			result: unknown;
 	  }
 	| WebSocketErrorMessage
+	// TODO: Decide whether the run-scoped workflow error envelope should be a named public export.
 	| {
 			version: 1;
 			type: 'error';
@@ -134,6 +160,7 @@ export type WorkflowWebSocketServerMessage =
 			error: FluePublicError;
 	  };
 
+/** Any protocol version 1 message emitted by a Flue WebSocket. */
 export type WebSocketServerMessage = AgentWebSocketServerMessage | WorkflowWebSocketServerMessage;
 
 /** Context passed to a {@link createAgent} initializer. */
@@ -985,6 +1012,21 @@ export type LlmTool = {
 
 export type LlmTurnPurpose = 'agent' | 'compaction' | 'compaction_prefix';
 
+/**
+ * Observable runtime activity. Workflow events carry `runId`; direct and
+ * dispatched agent activity carries `instanceId` without becoming a workflow
+ * run. Dispatched activity may also carry `dispatchId`.
+ *
+ * Correlation fields are optional on the shared union because events are
+ * constructed before transport-specific decoration. Runtime-emitted events are
+ * decorated with a per-context `eventIndex` and `timestamp`. Harnesses and
+ * sessions add their names where applicable; operations, turns, tasks, and tool
+ * calls use generated ids.
+ *
+ * Workflow history persists this union where run-store persistence succeeds.
+ * Attached-agent streams and {@link observe} deliver live activity; they are
+ * not durable workflow history.
+ */
 export type FlueEvent = (
 	| {
 			type: 'run_start';
@@ -1138,6 +1180,11 @@ export type FlueEvent = (
 	turnId?: string;
 };
 
+/**
+ * Live activity from a direct attached-agent interaction. Attached-agent events
+ * require `instanceId`, omit workflow lifecycle events, and never carry
+ * `runId`. They are not durable workflow history.
+ */
 export type AttachedAgentEvent = Exclude<
 	FlueEvent,
 	{ type: 'run_start' } | { type: 'run_resume' } | { type: 'run_end' }
@@ -1146,11 +1193,13 @@ export type AttachedAgentEvent = Exclude<
 	instanceId: string;
 };
 
+/** Terminal error frame emitted after an attached-agent SSE stream has started. */
 export interface AttachedAgentStreamError {
 	type: 'error';
 	instanceId: string;
 	error: FluePublicError;
 }
 
+// TODO: Decide whether these callback exports are supported public API or internal transport plumbing.
 export type FlueEventCallback = (event: FlueEvent) => void | Promise<void>;
 export type AttachedAgentEventCallback = (event: AttachedAgentEvent) => void | Promise<void>;

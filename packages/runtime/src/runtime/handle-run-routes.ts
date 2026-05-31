@@ -301,6 +301,7 @@ function encodeSseEvent(event: FlueEvent): string {
 	return [`event: ${event.type}`, `id: ${id}`, `data: ${JSON.stringify(event)}`, '', ''].join('\n');
 }
 
+// TODO: Replace this raw message with a caller-safe shared public error envelope across runtime and SDK.
 function encodeSseError(error: unknown, lastSentIndex: number | undefined): string {
 	const data = {
 		message: error instanceof Error ? error.message : String(error),

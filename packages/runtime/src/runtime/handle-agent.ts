@@ -348,6 +348,7 @@ interface WorkflowAdmissionOptions {
 	request: Request;
 	createContext: CreateContextFn;
 	startWorkflowAdmission: StartWorkflowAdmissionFn;
+	runHandler?: RunHandlerFn;
 	runStore?: RunStore;
 	runSubscribers?: RunSubscriberRegistry;
 	runRegistry?: RunRegistry;
@@ -364,6 +365,7 @@ interface AdmittedWorkflowExecution {
 	lifecycle: WorkflowRunLifecycle;
 	startWorkflowAdmission: StartWorkflowAdmissionFn;
 	handler: WorkflowHandler;
+	runHandler: RunHandlerFn;
 	onAdmitted?: (runId: string) => void;
 	onEvent?: FlueEventCallback;
 	emitIdleOnComplete?: boolean;
@@ -380,6 +382,7 @@ async function prepareWorkflowExecution(opts: WorkflowAdmissionOptions): Promise
 		request,
 		createContext,
 		startWorkflowAdmission,
+		runHandler = defaultRunHandler,
 		runStore,
 		runSubscribers,
 		runRegistry,
@@ -402,12 +405,12 @@ async function prepareWorkflowExecution(opts: WorkflowAdmissionOptions): Promise
 		restartedFromRunId,
 		requirePersistedAdmission: true,
 	});
-	return { runId, runStore, runSubscribers, lifecycle, startWorkflowAdmission, handler, onAdmitted, onEvent, emitIdleOnComplete };
+	return { runId, runStore, runSubscribers, lifecycle, startWorkflowAdmission, handler, runHandler, onAdmitted, onEvent, emitIdleOnComplete };
 }
 
 function startWorkflowExecution(execution: AdmittedWorkflowExecution): Promise<unknown> {
 	if (execution.completion) return execution.completion;
-	const { runId, lifecycle, handler, startWorkflowAdmission, onEvent, emitIdleOnComplete } = execution;
+	const { runId, lifecycle, handler, runHandler, startWorkflowAdmission, onEvent, emitIdleOnComplete } = execution;
 	let didRun = false;
 	let didEmitIdle = false;
 	if (onEvent || emitIdleOnComplete) {
@@ -421,7 +424,7 @@ function startWorkflowExecution(execution: AdmittedWorkflowExecution): Promise<u
 		try {
 			return await withWorkflowRunLifecycle(lifecycle, async () => {
 				try {
-					return await handler(lifecycle.ctx);
+					return await runHandler(lifecycle.ctx, handler);
 				} finally {
 					if (emitIdleOnComplete && !didEmitIdle) lifecycle.ctx.emitEvent({ type: 'idle' });
 				}
@@ -722,6 +725,7 @@ export async function invokeWorkflowAttached(opts: InvokeWorkflowAttachedOptions
 		request: opts.request,
 		createContext: opts.createContext,
 		startWorkflowAdmission: opts.startWorkflowAdmission,
+		runHandler: opts.runHandler,
 		runStore: opts.runStore,
 		runSubscribers: opts.runSubscribers,
 		runRegistry: opts.runRegistry,

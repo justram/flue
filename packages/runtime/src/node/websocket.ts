@@ -5,6 +5,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { InvalidRequestError } from '../errors.ts';
 import type {
 	AgentWebSocketClientMessage,
+	FlueEvent,
 	WebSocketServerMessage,
 	WorkflowWebSocketClientMessage,
 } from '../types.ts';
@@ -184,18 +185,31 @@ async function invokeWorkflow(
 	options: NodeWebSocketTransportOptions,
 ): Promise<void> {
 	const runId = generateWorkflowRunId(target.name);
-	send(socket, { version: 1, type: 'started', requestId: message.requestId, runId });
+	let didStart = false;
+	const bufferedEvents: FlueEvent[] = [];
 	try {
 		const invocation = await invokeWorkflowAttached({
 			owner: { kind: 'workflow', workflowName: target.name, instanceId: runId },
 			id: runId,
 			runId,
-			payload: message.payload,
+			payload: message.payload === undefined ? {} : message.payload,
 			request,
 			handler: target.handler,
 			createContext: options.createContext,
 			runHandler: options.runHandler,
-			onEvent: (event) => send(socket, { version: 1, type: 'event', requestId: message.requestId, runId, event }),
+			startWorkflowAdmission: (_runId, run) => Promise.resolve().then(run),
+			onAdmitted: () => {
+				didStart = true;
+				send(socket, { version: 1, type: 'started', requestId: message.requestId, runId });
+				for (const event of bufferedEvents) send(socket, { version: 1, type: 'event', requestId: message.requestId, runId, event });
+			},
+			onEvent: (event) => {
+				if (!didStart) {
+					bufferedEvents.push(event);
+					return;
+				}
+				send(socket, { version: 1, type: 'event', requestId: message.requestId, runId, event });
+			},
 			emitIdleOnComplete: true,
 			runStore: options.runStore,
 			runSubscribers: options.runSubscribers,
