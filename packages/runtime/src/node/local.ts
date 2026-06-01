@@ -17,16 +17,6 @@ export type LocalSandboxOptions = LocalSessionEnvOptions;
 
 export function local(options: LocalSandboxOptions = {}): SandboxFactory {
 	return {
-		// The `cwd` parameter is the runtime config hint returned by `createAgent()`. A
-		// sandbox-level `local({ cwd })` always wins; otherwise we honor
-		// the hint, falling through to `process.cwd()` inside the helper.
-		// The framework also wraps the returned SessionEnv with
-		// `createCwdSessionEnv(env, config.cwd)` (see client.ts), so when
-		// neither is set the wrapper is the only thing scoping cwd.
-		createSessionEnv: async ({ cwd }) =>
-			createLocalSessionEnv({
-				cwd: options.cwd ?? cwd,
-				env: options.env,
-			}),
+		createSessionEnv: async () => createLocalSessionEnv(options),
 	};
 }
