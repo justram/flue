@@ -764,7 +764,9 @@ export interface PromptResultResponse<T> {
 // ─── Session Store ──────────────────────────────────────────────────────────
 
 export interface SessionData {
-	version: 4;
+	version: 5;
+	/** Opaque stable provider-facing identity used for prompt caching and routing affinity. */
+	affinityKey: string;
 	entries: SessionEntry[];
 	leafId: string | null;
 	metadata: Record<string, any>;

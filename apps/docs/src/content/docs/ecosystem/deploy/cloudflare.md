@@ -387,7 +387,7 @@ Flue workflows do not resume from checkpointed durable steps after Durable Objec
 
 ### Beta persisted-schema boundary
 
-Flue supports Cloudflare Durable Object SQL state created by `v0.8.0` or newer. Earlier beta schemas are not supported; clear or separately migrate that persisted state before upgrading. Existing supported databases may retain unused historical columns. They do not require table rebuilds.
+Flue supports the Cloudflare Durable Object SQL table shape created by `v0.8.0` or newer. Existing supported databases may retain unused historical columns; they do not require table rebuilds. Persisted agent session records still follow Flue's beta session-data version boundary. Clear or separately migrate records written by an older session-data schema before upgrading.
 
 ## Sandbox context
 

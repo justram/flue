@@ -24,6 +24,10 @@ export function parseWorkflowRunId(runId: string): WorkflowRunIdParts | undefine
 	return { workflowName: match[1], runNonce: match[2] };
 }
 
+export function generateSessionAffinityKey(): string {
+	return `aff_${ulid()}`;
+}
+
 export function generateOperationId(): string {
 	return `op_${ulid()}`;
 }

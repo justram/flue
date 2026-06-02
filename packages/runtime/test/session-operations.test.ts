@@ -301,6 +301,41 @@ describe('session.task()', () => {
 		expect(taskSystemPrompts[0]).toContain('Working directory: /repo/packages/runtime');
 	});
 
+	it('persists distinct opaque affinity keys for delegated task sessions', async () => {
+		const provider = createProvider([{ id: 'reviewer' }]);
+		const providerSessionIds: Array<string | undefined> = [];
+		provider.setResponses([
+			(_context, options) => {
+				providerSessionIds.push(options?.sessionId);
+				return fauxAssistantMessage('Delegated response.');
+			},
+		]);
+		const store = new RecordingSessionStore();
+		const ctx = createContext(provider, { store });
+		const harness = await ctx.init(
+			createAgent(() => ({
+				model: `${provider.getModel().provider}/reviewer`,
+				persist: store,
+			})),
+		);
+		const session = await harness.session();
+
+		await session.task('Review the persisted child state.');
+
+		expect([...store.records.keys()]).toHaveLength(2);
+		const parentRecord = store.records.get(
+			'agent-session:["session-operations-instance","default","default"]',
+		);
+		const childEntry = [...store.records.entries()].find(([key]) => key.includes('task:default:'));
+		expect(childEntry?.[0]).toMatch(
+			/^agent-session:\["session-operations-instance","default","task:default:[^"]+"\]$/,
+		);
+		expect(parentRecord?.affinityKey).toMatch(/^aff_[0-9A-HJKMNP-TV-Z]{26}$/);
+		expect(childEntry?.[1].affinityKey).toMatch(/^aff_[0-9A-HJKMNP-TV-Z]{26}$/);
+		expect(childEntry?.[1].affinityKey).not.toBe(parentRecord?.affinityKey);
+		expect(providerSessionIds).toEqual([childEntry?.[1].affinityKey]);
+	});
+
 	it('removes persisted delegated-task state when the parent session is deleted', async () => {
 		const provider = createProvider([{ id: 'reviewer' }]);
 		provider.setResponses([fauxAssistantMessage('Delegated response.')]);

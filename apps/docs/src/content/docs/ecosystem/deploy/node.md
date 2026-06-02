@@ -263,7 +263,7 @@ Start with the local or virtual sandbox. Move to a remote sandbox when you need 
 
 On Node.js, session state is stored in memory by default — sessions persist for the lifetime of the process but are lost on restart. This is fine for development and stateless workloads.
 
-For durable sessions, return a custom store via the `persist` option from `createAgent(...)`. A store implements three methods — `save()`, `load()`, and `delete()` — each operating on a session ID and a `SessionData` object (message history, metadata, compaction state):
+For durable sessions, return a custom store via the `persist` option from `createAgent(...)`. A store implements three methods — `save()`, `load()`, and `delete()` — each operating on a session ID and a complete `SessionData` record, including message history, metadata, compaction state, and provider affinity:
 
 ```typescript
 import { createAgent, type FlueContext, type SessionStore, type SessionData } from '@flue/runtime';

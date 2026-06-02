@@ -273,9 +273,17 @@ export class SessionHistory {
 
 	static fromData(data: SessionData | null): SessionHistory {
 		if (!data) return SessionHistory.empty();
-		if (data.version !== 4) {
+		if (data.version !== 5) {
 			throw new Error(
 				`[flue] Session data version ${String(data.version)} is unsupported. Clear persisted session state created by an earlier Flue beta.`,
+			);
+		}
+		if (
+			typeof data.affinityKey !== 'string' ||
+			!/^aff_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(data.affinityKey)
+		) {
+			throw new Error(
+				'[flue] Session data affinity key is malformed. Clear malformed persisted session state.',
 			);
 		}
 		return new SessionHistory(data.entries, data.leafId);
@@ -432,9 +440,15 @@ export class SessionHistory {
 		return true;
 	}
 
-	toData(metadata: Record<string, any>, createdAt: string, updatedAt: string): SessionData {
+	toData(
+		affinityKey: string,
+		metadata: Record<string, any>,
+		createdAt: string,
+		updatedAt: string,
+	): SessionData {
 		return {
-			version: 4,
+			version: 5,
+			affinityKey,
 			entries: [...this.entries],
 			leafId: this.leafId,
 			metadata,
@@ -543,6 +557,7 @@ export class Session implements FlueSession {
 
 	private harness: Agent;
 	private storageKey: string;
+	private affinityKey: string;
 	private config: AgentConfig;
 	private env: SessionEnv;
 	private store: SessionStore;
@@ -609,6 +624,7 @@ export class Session implements FlueSession {
 	constructor(options: SessionInitOptions) {
 		this.name = options.name;
 		this.storageKey = options.storageKey;
+		this.affinityKey = options.affinityKey;
 		this.config = options.config;
 		this.env = options.env;
 		this.fs = createFlueFs(options.env);
@@ -643,7 +659,7 @@ export class Session implements FlueSession {
 			onPayload: (payload, model) => this.applyProviderPayloadOverrides(payload, model),
 			streamFn: this.emitTurnRequestAndStream,
 			toolExecution: 'parallel',
-			sessionId: options.affinityKey,
+			sessionId: this.affinityKey,
 		});
 
 		this.eventCallback = options.onAgentEvent;
@@ -1594,7 +1610,7 @@ export class Session implements FlueSession {
 
 	private async save(): Promise<void> {
 		const now = new Date().toISOString();
-		const data = this.history.toData(this.metadata, this.createdAt ?? now, now);
+		const data = this.history.toData(this.affinityKey, this.metadata, this.createdAt ?? now, now);
 		if (!this.createdAt) this.createdAt = now;
 		await this.store.save(this.storageKey, data);
 	}

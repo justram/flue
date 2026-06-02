@@ -92,7 +92,8 @@ describe('Cloudflare context', () => {
 describe('Cloudflare session store', () => {
 	it('saves session state through the active agent instance when save() is called', async () => {
 		const data = {
-			version: 4 as const,
+			version: 5 as const,
+			affinityKey: 'aff_01J00000000000000000000000',
 			entries: [],
 			leafId: null,
 			metadata: { topic: 'saved' },
@@ -119,7 +120,8 @@ describe('Cloudflare session store', () => {
 
 	it('loads session state through the active agent instance when load() is called', async () => {
 		const data = {
-			version: 4 as const,
+			version: 5 as const,
+			affinityKey: 'aff_01J00000000000000000000000',
 			entries: [],
 			leafId: null,
 			metadata: { topic: 'loaded' },
@@ -161,7 +163,8 @@ describe('Cloudflare session store', () => {
 
 	it('round-trips reserved object-key session names without reading inherited state when session names include prototype keys', async () => {
 		const prototypeData = {
-			version: 4 as const,
+			version: 5 as const,
+			affinityKey: 'aff_01J00000000000000000000000',
 			entries: [],
 			leafId: null,
 			metadata: { topic: 'prototype' },
@@ -169,7 +172,8 @@ describe('Cloudflare session store', () => {
 			updatedAt: '2026-06-01T00:00:00.000Z',
 		};
 		const constructorData = {
-			version: 4 as const,
+			version: 5 as const,
+			affinityKey: 'aff_01J00000000000000000000000',
 			entries: [],
 			leafId: null,
 			metadata: { topic: 'constructor' },

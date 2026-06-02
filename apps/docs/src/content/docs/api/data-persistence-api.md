@@ -3,7 +3,7 @@ title: Data Persistence API
 description: Store Flue session conversation state through the public persistence contract.
 ---
 
-The data persistence API controls **session conversation state**: recorded messages, task relationships, compaction summaries, and metadata needed to reopen a session. It does not store sandbox files or create workflow run history.
+The data persistence API controls **session conversation state**: recorded messages, task relationships, compaction summaries, provider affinity, and metadata needed to reopen a session. It does not store sandbox files or create workflow run history.
 
 For deciding what must survive deployment, see [Agents](/docs/guide/building-agents/) and [Sandboxes](/docs/guide/sandboxes/). For build output and the deployment handoff, see [Develop & Build](/docs/guide/develop-and-build/).
 
@@ -53,7 +53,8 @@ export default createAgent(() => ({
 
 ```ts
 interface SessionData {
-  version: 4;
+  version: 5;
+  affinityKey: string;
   entries: SessionEntry[];
   leafId: string | null;
   metadata: Record<string, any>;
@@ -65,6 +66,11 @@ interface SessionData {
 Flue rejects records written with an unsupported `version`. During the beta,
 clear older persisted session state when upgrading across a storage-version
 change.
+
+`affinityKey` is an opaque Flue-generated `aff_<ULID>` identity forwarded to
+model providers for prompt caching and routing affinity. Persist it unchanged
+when saving and reopening a session. It is separate from the supplied store
+`id`, which remains Flue's lossless storage key.
 
 `entries` contains the stored session history tree:
 
@@ -97,7 +103,7 @@ A persisted conversation does not make sandbox files durable. A durable workspac
 
 ## Identity and deletion
 
-Session data is stored under keys derived from Flue identity boundaries: agent instance or workflow invocation ownership, harness name, and session name. Deleting a session removes its stored conversation data and stored child task-session tree; it does not undo external effects or remove sandbox files.
+Session data is stored under keys derived from Flue identity boundaries: agent instance or workflow invocation ownership, harness name, and session name. The stored record contains a separate opaque provider-affinity key. Deleting a session removes its stored conversation data and stored child task-session tree; it does not undo external effects or remove sandbox files.
 
 ## Implementing a store
 

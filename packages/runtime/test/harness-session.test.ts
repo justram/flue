@@ -105,10 +105,71 @@ describe('FlueHarness', () => {
 			expect(created.name).toBe('default');
 			expect(reopened).toBe(created);
 			expect(store.peek('agent-session:["agent-instance","default","default"]')).toMatchObject({
-				version: 4,
+				version: 5,
+				affinityKey: expect.stringMatching(/^aff_[0-9A-HJKMNP-TV-Z]{26}$/),
 				entries: [],
 				leafId: null,
 			});
+		});
+
+		it('rejects persisted session data written by an earlier beta', async () => {
+			const store = new TrackingSessionStore();
+			await store.save('agent-session:["agent-instance","default","review"]', {
+				version: 4,
+				affinityKey: 'aff_01J00000000000000000000000',
+				entries: [],
+				leafId: null,
+				metadata: {},
+				createdAt: '2026-06-02T00:00:00.000Z',
+				updatedAt: '2026-06-02T00:00:00.000Z',
+			} as unknown as SessionData);
+			const harness = await createContext(createEnv(), store).init(
+				createAgent(() => ({ model: false })),
+			);
+
+			await expect(harness.session('review')).rejects.toThrow(
+				'Session data version 4 is unsupported. Clear persisted session state created by an earlier Flue beta.',
+			);
+		});
+
+		it('rejects malformed persisted session affinity keys', async () => {
+			const store = new TrackingSessionStore();
+			await store.save('agent-session:["agent-instance","default","review"]', {
+				version: 5,
+				affinityKey: ['aff_01J00000000000000000000000'],
+				entries: [],
+				leafId: null,
+				metadata: {},
+				createdAt: '2026-06-02T00:00:00.000Z',
+				updatedAt: '2026-06-02T00:00:00.000Z',
+			} as unknown as SessionData);
+			const harness = await createContext(createEnv(), store).init(
+				createAgent(() => ({ model: false })),
+			);
+
+			await expect(harness.session('review')).rejects.toThrow(
+				'Session data affinity key is malformed. Clear malformed persisted session state.',
+			);
+		});
+
+		it('rejects persisted session affinity keys with overflowing ULID timestamps', async () => {
+			const store = new TrackingSessionStore();
+			await store.save('agent-session:["agent-instance","default","review"]', {
+				version: 5,
+				affinityKey: 'aff_ZZZZZZZZZZZZZZZZZZZZZZZZZZ',
+				entries: [],
+				leafId: null,
+				metadata: {},
+				createdAt: '2026-06-02T00:00:00.000Z',
+				updatedAt: '2026-06-02T00:00:00.000Z',
+			} as SessionData);
+			const harness = await createContext(createEnv(), store).init(
+				createAgent(() => ({ model: false })),
+			);
+
+			await expect(harness.session('review')).rejects.toThrow(
+				'Session data affinity key is malformed. Clear malformed persisted session state.',
+			);
 		});
 
 		it('preserves named conversation state when a session is reopened from persistent storage', async () => {
@@ -119,9 +180,10 @@ describe('FlueHarness', () => {
 			);
 			const firstSession = await firstHarness.session('review');
 			await firstSession.shell('printf first');
-			const preservedEntries = structuredClone(
-				store.peek('agent-session:["agent-instance","default","review"]')?.entries,
-			);
+			const firstRecord = store.peek('agent-session:["agent-instance","default","review"]');
+			const affinityKey = firstRecord?.affinityKey;
+			const preservedEntries = structuredClone(firstRecord?.entries);
+			expect(affinityKey).toMatch(/^aff_[0-9A-HJKMNP-TV-Z]{26}$/);
 			expect(preservedEntries).toHaveLength(3);
 			const secondHarness = await createContext(createEnv({ exec }), store).init(
 				createAgent(() => ({ model: false })),
@@ -130,8 +192,10 @@ describe('FlueHarness', () => {
 			const reopened = await secondHarness.sessions.get('review');
 			await reopened.shell('printf second');
 
-			const entries = store.peek('agent-session:["agent-instance","default","review"]')?.entries;
+			const reopenedRecord = store.peek('agent-session:["agent-instance","default","review"]');
+			const entries = reopenedRecord?.entries;
 			expect(reopened.name).toBe('review');
+			expect(reopenedRecord?.affinityKey).toBe(affinityKey);
 			expect(entries).toHaveLength(6);
 			expect(entries?.slice(0, 3)).toEqual(preservedEntries);
 			expect(entries?.slice(3)).toEqual([

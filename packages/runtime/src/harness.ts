@@ -2,6 +2,7 @@ import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { createCallHandle } from './abort.ts';
 import { formatBashResult } from './agent.ts';
 import { discoverSessionContext } from './context.ts';
+import { generateSessionAffinityKey } from './runtime/ids.ts';
 import { createCwdSessionEnv, createFlueFs } from './sandbox.ts';
 import { type CreateTaskSessionOptions, deleteSessionTree, Session } from './session.ts';
 import type {
@@ -135,7 +136,6 @@ export class Harness implements FlueHarness {
 		}
 
 		const storageKey = createSessionStorageKey(this.instanceId, this.name, sessionName);
-		const affinityKey = createSessionAffinityKey(this.instanceId, this.name, sessionName);
 		const existingData = await this.store.load(storageKey);
 		if (mode === 'get' && !existingData) {
 			throw new Error(`[flue] Session "${sessionName}" does not exist in harness "${this.name}".`);
@@ -145,7 +145,7 @@ export class Harness implements FlueHarness {
 		}
 
 		let data = existingData;
-		if (!data && mode !== 'get') {
+		if (!data) {
 			data = createEmptySessionData();
 			await this.store.save(storageKey, data);
 		}
@@ -153,7 +153,7 @@ export class Harness implements FlueHarness {
 		const session = new Session({
 			name: sessionName,
 			storageKey,
-			affinityKey,
+			affinityKey: data.affinityKey,
 			config: this.config,
 			env: this.env,
 			store: this.store,
@@ -216,7 +216,6 @@ export class Harness implements FlueHarness {
 			compaction: taskAgent?.compaction ?? this.config.compaction,
 		};
 		const storageKey = createSessionStorageKey(this.instanceId, this.name, sessionName);
-		const affinityKey = createSessionAffinityKey(this.instanceId, this.name, sessionName);
 		const data = createEmptySessionData();
 		data.metadata = {
 			parentSession: options.parentSession,
@@ -241,7 +240,7 @@ export class Harness implements FlueHarness {
 		return new Session({
 			name: sessionName,
 			storageKey,
-			affinityKey,
+			affinityKey: data.affinityKey,
 			config: taskConfig,
 			env: taskEnv,
 			store: this.store,
@@ -285,18 +284,11 @@ function createSessionStorageKey(instanceId: string, harness: string, sessionNam
 	return `agent-session:${JSON.stringify([instanceId, harness, sessionName])}`;
 }
 
-function createSessionAffinityKey(
-	instanceId: string,
-	harness: string,
-	sessionName: string,
-): string {
-	return `${instanceId}::${harness}::${sessionName}`;
-}
-
 function createEmptySessionData(): SessionData {
 	const now = new Date().toISOString();
 	return {
-		version: 4,
+		version: 5,
+		affinityKey: generateSessionAffinityKey(),
 		entries: [],
 		leafId: null,
 		metadata: {},

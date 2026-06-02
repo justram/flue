@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- **Agents: Clear or migrate persisted beta session state before upgrading.** Session records now persist one opaque `aff_<ULID>` provider-affinity key instead of deriving affinity from agent instance, harness, and session names. This keeps prompt-cache and routing-affinity identifiers bounded and distinct for nested tasks. Existing version-4 beta session records are rejected; storage keys are unchanged.
+
 ## 0.9.1 - 2026-06-02
 
 ### Fixes & Other Changes
@@ -49,7 +53,6 @@
 - Pass at most one `--env` file. `flue build`, `flue dev`, `flue run`, and `flue connect` reject repeated `--env` flags. Combine values into one file or use shell environment overrides.
 - `session.delete()` and `harness.sessions.delete()` now reject while the selected session has an active operation.
 - Testing: Import `registerFauxProvider(...)`, `fauxAssistantMessage(...)`, `fauxText(...)`, and `fauxToolCall(...)` from `@earendil-works/pi-ai` instead of `@flue/runtime`.
-
 
 ## 0.8.1 - 2026-05-28
 
