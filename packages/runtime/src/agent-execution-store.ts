@@ -164,6 +164,13 @@ export interface AgentSubmissionStore {
 
 	// Deletion
 	deleteSession(sessionKey: string, deleteSessionTree: () => Promise<void>): Promise<void>;
+	/**
+	 * List session keys with a durable deletion marker (deletion started but
+	 * never completed, e.g. the process crashed mid-deletion). Coordinators
+	 * resume these at startup by calling {@link deleteSession} again —
+	 * otherwise the marker blocks all admissions for the session forever.
+	 */
+	listPendingSessionDeletions(): Promise<string[]>;
 }
 
 // ─── Execution store ────────────────────────────────────────────────────────

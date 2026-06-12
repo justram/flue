@@ -11,6 +11,7 @@ import {
 import { assertAgentDispatchAdmissionInput, handleAgentRequest } from '../runtime/handle-agent.ts';
 import { agentStreamPath } from '../runtime/event-stream-store.ts';
 import { handleStreamHead, handleStreamRead } from '../runtime/handle-stream-routes.ts';
+import { deleteSessionTree } from '../session.ts';
 import type { AttachedAgentEvent, DirectAgentPayload } from '../types.ts';
 import { createSqlAgentExecutionStore } from './agent-execution-store.ts';
 
@@ -157,7 +158,37 @@ class CloudflareAgentCoordinator {
 	async onStart(inherited: () => Promise<unknown> | unknown): Promise<void> {
 		await this.restoreSubmissionWake();
 		await inherited();
+		await this.resumePendingSessionDeletions();
 		await this.reconcileSubmissions({ driverAlreadyArmed: true });
+	}
+
+	/**
+	 * Resume session deletions interrupted by an eviction or crash. A durable
+	 * deletion marker written before the interruption blocks every admission
+	 * for that session until deletion completes, so re-run the (idempotent)
+	 * deletion to clear it. Failures are logged and left for the next start;
+	 * the marker keeps the session safely blocked meanwhile.
+	 */
+	private async resumePendingSessionDeletions(): Promise<void> {
+		for (const sessionKey of await this.submissions.listPendingSessionDeletions()) {
+			try {
+				await this.submissions.deleteSession(sessionKey, () =>
+					deleteSessionTree(this.executionStore.sessions, sessionKey),
+				);
+			} catch (error) {
+				console.error(
+					'[flue:session-deletion]',
+					{
+						agentName: this.agentName,
+						instanceId: this.instance.name,
+						sessionKey,
+						operation: 'resume_session_deletion',
+						outcome: 'failed',
+					},
+					error,
+				);
+			}
+		}
 	}
 
 	async wakeSubmissions(): Promise<void> {

@@ -506,6 +506,13 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 		);
 	}
 
+	async listPendingSessionDeletions(): Promise<string[]> {
+		return this.sql
+			.exec('SELECT session_key FROM flue_agent_session_deletions')
+			.toArray()
+			.map((row) => String(row.session_key));
+	}
+
 	private async runSessionDeletion(sessionKey: string, deleteSessionTree: () => Promise<void>): Promise<void> {
 		this.transactionSync(() => {
 			const active = this.sql
@@ -546,7 +553,10 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				.toArray();
 			const deletionRow = deletionRows[0];
 			if (!deletionRow || typeof deletionRow.started_at !== 'number') {
-				throw new Error('[flue] Missing session deletion marker during cleanup.');
+				// The marker is gone: a concurrent deletion run (e.g. a startup
+				// resume in another process sharing this database) already
+				// completed phase 3. Nothing left to clean up.
+				return;
 			}
 			const startedAt = deletionRow.started_at;
 			this.sql.exec(

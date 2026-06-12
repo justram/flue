@@ -968,6 +968,7 @@ describe('repairInterruptedToolCalls()', () => {
 		const { createNodeAgentCoordinator } = await import('../src/node/agent-coordinator.ts');
 		const coordinator = createNodeAgentCoordinator({
 			submissions: executionStore.submissions,
+			sessions: executionStore.sessions,
 			agents: {
 				moderator: createAgent(() => ({
 					model: `${provider.getModel().provider}/${provider.getModel().id}`,
@@ -1037,6 +1038,7 @@ describe('repairInterruptedToolCalls()', () => {
 		const { createNodeAgentCoordinator } = await import('../src/node/agent-coordinator.ts');
 		const coordinator = createNodeAgentCoordinator({
 			submissions: executionStore.submissions,
+			sessions: executionStore.sessions,
 			agents: {
 				moderator: createAgent(() => ({
 					model: `${provider.getModel().provider}/${provider.getModel().id}`,

@@ -1,6 +1,7 @@
 import type { AgentSubmission, AgentSubmissionStore } from '../agent-execution-store.ts';
 import { LEASE_DURATION_MS } from '../agent-execution-store.ts';
-import type { AttachedAgentEvent, CreatedAgent, DirectAgentPayload, DispatchReceipt } from '../types.ts';
+import { deleteSessionTree } from '../session.ts';
+import type { AttachedAgentEvent, CreatedAgent, DirectAgentPayload, DispatchReceipt, SessionStore } from '../types.ts';
 import {
 	type AgentSubmissionInput,
 	type AttachedAgentSubmissionAdmission,
@@ -66,11 +67,12 @@ export function createNodeDispatchQueue(coordinator: NodeAgentCoordinator): Disp
 
 export function createNodeAgentCoordinator(options: {
 	submissions: AgentSubmissionStore;
+	sessions: SessionStore;
 	agents: Record<string, CreatedAgent>;
 	createContext: CreateContextFn;
 	eventStreamStore: import('../runtime/event-stream-store.ts').EventStreamStore;
 }): NodeAgentCoordinator {
-	const { submissions, agents, createContext, eventStreamStore } = options;
+	const { submissions, sessions, agents, createContext, eventStreamStore } = options;
 	const observers = createAgentSubmissionObserverRegistry();
 
 	// ── Lease ownership ──────────────────────────────────────────────────
@@ -391,10 +393,32 @@ export function createNodeAgentCoordinator(options: {
 		}
 	}
 
+	/**
+	 * Resume session deletions interrupted by a process crash. A durable
+	 * deletion marker written before the crash blocks every admission for
+	 * that session until deletion completes, so re-run the (idempotent)
+	 * deletion to clear it. Failures are logged and left for the next
+	 * startup; the marker keeps the session safely blocked meanwhile.
+	 */
+	async function resumePendingSessionDeletions(): Promise<void> {
+		for (const sessionKey of await submissions.listPendingSessionDeletions()) {
+			try {
+				await submissions.deleteSession(sessionKey, () => deleteSessionTree(sessions, sessionKey));
+			} catch (error) {
+				console.error(
+					'[flue:session-deletion]',
+					{ sessionKey, operation: 'resume_session_deletion', outcome: 'failed' },
+					error,
+				);
+			}
+		}
+	}
+
 	// ── Public interface ─────────────────────────────────────────────────
 
 	return {
 		async reconcileSubmissions() {
+			await resumePendingSessionDeletions();
 			if (!(await submissions.hasUnsettledSubmissions())) return;
 			// Start the claim loop first so that settlement wakes from
 			// reconciled submissions are properly received.

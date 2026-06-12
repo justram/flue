@@ -646,6 +646,23 @@ export function defineStoreContractTests(
 				});
 			});
 
+			it('lists the pending deletion marker until deletion completes', async () => {
+				const store = await create();
+				const sessionKey = 'agent-session:["agent-1","default","default"]';
+				let releaseDeletion: () => void = () => {};
+				const deletionReleased = new Promise<void>((resolve) => {
+					releaseDeletion = resolve;
+				});
+
+				const deletion = store.submissions.deleteSession(sessionKey, () => deletionReleased);
+				// Allow the durable phase-1 marker write to settle.
+				await new Promise((r) => setTimeout(r, 50));
+				expect(await store.submissions.listPendingSessionDeletions()).toEqual([sessionKey]);
+				releaseDeletion();
+				await deletion;
+				expect(await store.submissions.listPendingSessionDeletions()).toEqual([]);
+			});
+
 			it('clears terminal rows when a settled session is deleted', async () => {
 				const store = await create();
 				const sessionKey = 'agent-session:["agent-1","default","default"]';

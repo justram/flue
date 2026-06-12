@@ -132,6 +132,7 @@ function createRealCoordinator(
 	const agent = createAgent(() => ({ model: REAL_MODEL }));
 	const coordinator = createNodeAgentCoordinator({
 		submissions: executionStore.submissions,
+		sessions: executionStore.sessions,
 		agents: { assistant: agent },
 		createContext: makeRealCreateContext(executionStore),
 		eventStreamStore: createTestEventStreamStore(),
@@ -152,6 +153,7 @@ function createFauxCoordinator(
 	}));
 	const coordinator = createNodeAgentCoordinator({
 		submissions: executionStore.submissions,
+		sessions: executionStore.sessions,
 		agents: { assistant: agent },
 		createContext: makeFauxCreateContext(provider, executionStore),
 		eventStreamStore: createTestEventStreamStore(),
@@ -676,6 +678,45 @@ leaseExpiresAt: 1,
 			expect(subOld).toMatchObject({ status: 'settled' });
 			expect(subOld?.error).toBeUndefined();
 		}, 60_000);
+	});
+
+	describe('session deletion resume across restart', () => {
+		it('completes a crash-interrupted session deletion during reconciliation and unblocks admissions', async () => {
+			const dbPath = createTempDbPath();
+			const store = createNodeAgentExecutionStore(dbPath);
+			const sessionKey = createSessionStorageKey('instance-1', 'default', 'default');
+			await store.sessions.save(sessionKey, {
+				version: 5,
+				affinityKey: generateSessionAffinityKey(),
+				entries: [],
+				leafId: null,
+				metadata: {},
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+			});
+
+			// Simulate a crash mid-deletion: phase 1 durably writes the deletion
+			// marker, then the process dies before the session tree is deleted.
+			void store.submissions.deleteSession(sessionKey, () => new Promise<never>(() => {}));
+			await new Promise((r) => setTimeout(r, 50));
+			expect(await store.submissions.listPendingSessionDeletions()).toEqual([sessionKey]);
+			// The orphaned marker blocks every admission for this session.
+			await expect(store.submissions.admitDispatch(makeDispatchInput())).rejects.toThrow(
+				'admission is unavailable while this session is being deleted',
+			);
+
+			// "Restart": a fresh coordinator resumes the deletion on reconcile.
+			const provider = createFauxProvider();
+			const { coordinator, executionStore } = createFauxCoordinator(dbPath, provider);
+			await coordinator.reconcileSubmissions();
+
+			expect(await executionStore.submissions.listPendingSessionDeletions()).toEqual([]);
+			expect(await executionStore.sessions.load(sessionKey)).toBeNull();
+			expect(await executionStore.submissions.admitDispatch(makeDispatchInput())).toMatchObject({
+				kind: 'submission',
+				submission: { status: 'queued' },
+			});
+		});
 	});
 
 	// ─── Direct prompt admission ────────────────────────────────────────────

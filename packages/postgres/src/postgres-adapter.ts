@@ -847,6 +847,11 @@ class PgSubmissionStore implements AgentSubmissionStore {
 		);
 	}
 
+	async listPendingSessionDeletions(): Promise<string[]> {
+		const rows = await this.runner.query('SELECT session_key FROM flue_agent_session_deletions');
+		return rows.map((row) => String(row.session_key));
+	}
+
 	// ── Private ──────────────────────────────────────────────────────────
 
 	private async admitSubmission(

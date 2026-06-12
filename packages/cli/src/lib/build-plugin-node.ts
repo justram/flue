@@ -148,6 +148,7 @@ const eventStreamStore = defaultAdapter.connectEventStreamStore();`
 const persistenceAdapter = ${dbEntry ? `userPersistenceAdapter` : `defaultAdapter`};
 const agentCoordinator = createNodeAgentCoordinator({
   submissions: executionStore.submissions,
+  sessions: executionStore.sessions,
   agents: createdAgents,
   createContext: createContextForRequest,
   eventStreamStore,
