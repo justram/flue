@@ -105,4 +105,11 @@ export { DEFAULT_READ_LIMIT, formatOffset, MAX_READ_LIMIT, parseOffset } from '.
 
 // ─── Re-export session types needed for SessionStore implementations ────────
 
-export type { SessionData, SessionStore, TaskSessionRef } from './types.ts';
+export type {
+	CompactionEntry,
+	MessageEntry,
+	SessionData,
+	SessionEntry,
+	SessionStore,
+	TaskSessionRef,
+} from './types.ts';
