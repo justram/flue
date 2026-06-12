@@ -3,18 +3,121 @@
  *
  * Internal implementation behind the `local()` sandbox factory (see
  * `./local.ts`). Not exported from `@flue/runtime/node` — user code reaches
- * this through `local(...)`. `exec` shells out via `child_process.exec`;
+ * this through `local(...)`. `exec` shells out via `child_process.spawn`;
  * file methods call `node:fs/promises` directly.
  */
-import { exec as execCb } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { promisify } from 'node:util';
 
 import { abortErrorFor } from '../abort.ts';
 import type { FileStat, SessionEnv, ShellResult } from '../types.ts';
 
-const execAsync = promisify(execCb);
+/** Cap on captured stdout+stderr (matches the old `exec` maxBuffer lift). */
+const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+
+/** Grace period between SIGTERM and SIGKILL when tearing down a process group. */
+const KILL_GRACE_MS = 2000;
+
+/**
+ * Run `command` through the system shell in its own process group and
+ * collect output. On abort (caller signal or timeout) the entire group is
+ * signalled (SIGTERM, escalating to SIGKILL) so compound commands can't
+ * orphan grandchildren on the host — `child_process.exec`'s `signal` option
+ * kills only the shell itself, leaving e.g. backgrounded dev servers alive.
+ *
+ * Always resolves with a `ShellResult`; spawn failures surface as
+ * `exitCode: 1` with the error message on stderr, matching the previous
+ * `exec`-based behavior for non-zero exits.
+ */
+function execShell(
+	command: string,
+	opts: { cwd: string; env: NodeJS.ProcessEnv; signal?: AbortSignal },
+): Promise<ShellResult> {
+	return new Promise((resolve) => {
+		const child = spawn(command, {
+			cwd: opts.cwd,
+			env: opts.env,
+			shell: true,
+			// POSIX: lead a new process group so abort can signal the whole
+			// tree via `process.kill(-pid)`. No-op grouping on Windows.
+			detached: process.platform !== 'win32',
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+
+		let stdout = '';
+		let stderr = '';
+		let truncated = false;
+		let settled = false;
+		let killTimer: NodeJS.Timeout | undefined;
+
+		const killTree = (sig: NodeJS.Signals): void => {
+			if (child.pid === undefined) return;
+			try {
+				// Negative pid → signal the process group (POSIX).
+				process.kill(-child.pid, sig);
+			} catch {
+				try {
+					child.kill(sig);
+				} catch {
+					// Already gone.
+				}
+			}
+		};
+
+		const onAbort = (): void => {
+			killTree('SIGTERM');
+			killTimer = setTimeout(() => killTree('SIGKILL'), KILL_GRACE_MS);
+			killTimer.unref();
+		};
+
+		const settle = (result: ShellResult): void => {
+			if (settled) return;
+			settled = true;
+			if (killTimer !== undefined) clearTimeout(killTimer);
+			opts.signal?.removeEventListener('abort', onAbort);
+			resolve(result);
+		};
+
+		if (opts.signal?.aborted) {
+			onAbort();
+		} else {
+			opts.signal?.addEventListener('abort', onAbort, { once: true });
+		}
+
+		const onData = (chunk: string, target: 'stdout' | 'stderr'): void => {
+			if (target === 'stdout') stdout += chunk;
+			else stderr += chunk;
+			if (!truncated && stdout.length + stderr.length > MAX_OUTPUT_BYTES) {
+				truncated = true;
+				killTree('SIGTERM');
+			}
+		};
+		child.stdout.setEncoding('utf8');
+		child.stdout.on('data', (chunk: string) => onData(chunk, 'stdout'));
+		child.stderr.setEncoding('utf8');
+		child.stderr.on('data', (chunk: string) => onData(chunk, 'stderr'));
+
+		child.once('error', (err) => {
+			// Spawn failure (no 'close' will follow) or post-spawn kill error.
+			killTree('SIGTERM');
+			settle({ stdout, stderr: stderr || String(err.message ?? err), exitCode: 1 });
+		});
+
+		child.once('close', (code) => {
+			if (truncated) {
+				settle({
+					stdout,
+					stderr: `${stderr}\n[flue] local exec output exceeded ${MAX_OUTPUT_BYTES} bytes; process tree killed`,
+					exitCode: 1,
+				});
+				return;
+			}
+			// `code` is null when the child died from a signal (abort/timeout).
+			settle({ stdout, stderr, exitCode: code ?? 1 });
+		});
+	});
+}
 
 /**
  * Shell-essential env vars inherited from `process.env` by default. Pulled
@@ -120,34 +223,16 @@ export function createLocalSessionEnv(options: LocalSessionEnvOptions = {}): Ses
 					? AbortSignal.any([signal, timeoutSignal])
 					: (signal ?? timeoutSignal);
 
-			try {
-				const { stdout, stderr } = await execAsync(command, {
-					cwd: opts?.cwd ? resolvePath(opts.cwd) : cwd,
-					// Per-call env layers on top of `baseEnv` (allowlist +
-					// sandbox `env` option). `process.env` is intentionally
-					// never read here.
-					env: opts?.env ? { ...baseEnv, ...opts.env } : baseEnv,
-					signal: mergedSignal,
-					// Return strings (not Buffers) and lift the default 1MB cap.
-					encoding: 'utf8',
-					maxBuffer: 64 * 1024 * 1024,
-				});
-				if (signal?.aborted) throw abortErrorFor(signal);
-				return { stdout, stderr, exitCode: 0 };
-			} catch (err: any) {
-				if (signal?.aborted) throw abortErrorFor(signal);
-				// `child_process.exec` rejects on non-zero exit. Surface stdout/stderr
-				// and the exit code through the standard ShellResult shape rather than
-				// as an exception — matches just-bash and remote sandbox connectors.
-				if (err && typeof err === 'object' && 'code' in err) {
-					return {
-						stdout: typeof err.stdout === 'string' ? err.stdout : '',
-						stderr: typeof err.stderr === 'string' ? err.stderr : String(err.message ?? ''),
-						exitCode: typeof err.code === 'number' ? err.code : 1,
-					};
-				}
-				throw err;
-			}
+			const result = await execShell(command, {
+				cwd: opts?.cwd ? resolvePath(opts.cwd) : cwd,
+				// Per-call env layers on top of `baseEnv` (allowlist +
+				// sandbox `env` option). `process.env` is intentionally
+				// never read here.
+				env: opts?.env ? { ...baseEnv, ...opts.env } : baseEnv,
+				signal: mergedSignal,
+			});
+			if (signal?.aborted) throw abortErrorFor(signal);
+			return result;
 		},
 
 		async readFile(p) {

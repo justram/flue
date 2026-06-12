@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -234,6 +234,42 @@ describe('local()', () => {
 			isSymbolicLink: false,
 		});
 		await rm(directory, { recursive: true, force: true });
+	});
+
+	it('kills backgrounded grandchild processes when a local shell command is aborted', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'flue-local-abort-tree-'));
+		try {
+			const harness = await createContext().init(
+				createAgent(() => ({ model: false, sandbox: local({ cwd: directory }) })),
+			);
+			const controller = new AbortController();
+
+			// Background a long-lived grandchild from the shell, record its pid,
+			// then keep the shell alive so the abort lands mid-command.
+			const call = harness.shell('sleep 60 & echo $! > grandchild.pid; wait', {
+				signal: controller.signal,
+			});
+			await expect
+				.poll(() => readFile(join(directory, 'grandchild.pid'), 'utf8').catch(() => ''))
+				.toMatch(/\d/);
+			controller.abort();
+			await expect(call).rejects.toMatchObject({ name: 'AbortError' });
+
+			// The whole process group must die, not just the shell.
+			const pid = Number((await readFile(join(directory, 'grandchild.pid'), 'utf8')).trim());
+			await expect
+				.poll(() => {
+					try {
+						process.kill(pid, 0);
+						return 'alive';
+					} catch {
+						return 'gone';
+					}
+				})
+				.toBe('gone');
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	it('rejects invalid env configuration when local() receives a non-record env value', async () => {
