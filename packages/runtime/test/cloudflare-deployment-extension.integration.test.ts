@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest';
 import {
 	build,
 	cloudflareViteConfigPath,
-	cloudflareViteInputDir,
 	createCloudflareViteConfig,
+	viteInputDir,
 } from '../../cli/src/lib/build.ts';
 
 describe('Cloudflare deployment extensions', () => {
@@ -56,7 +56,7 @@ export default {
 	it('rejects invalid cloudflare.ts default exports', async () => {
 		const root = await createGeneratedFixture(`export default null;\n`);
 		try {
-			const entry = fs.readFileSync(path.join(cloudflareViteInputDir(root), '_entry.ts'), 'utf8');
+			const entry = fs.readFileSync(path.join(viteInputDir(root), '_entry.ts'), 'utf8');
 			expect(entry).toContain(
 				`throw new Error('[flue] cloudflare.ts default export must be an object containing non-HTTP Worker handlers.');`,
 			);
@@ -81,7 +81,7 @@ export default {
 			],
 		});
 		try {
-			const entry = fs.readFileSync(path.join(cloudflareViteInputDir(root), '_entry.ts'), 'utf8');
+			const entry = fs.readFileSync(path.join(viteInputDir(root), '_entry.ts'), 'utf8');
 			expect(entry).not.toContain(`from '@cloudflare/sandbox'`);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
@@ -118,7 +118,7 @@ export default {
 
 	it('does not update generated deployment inputs when Wrangler validation fails', async () => {
 		const root = await createGeneratedFixture(`export class Counter {}\n`);
-		const entryPath = path.join(cloudflareViteInputDir(root), '_entry.ts');
+		const entryPath = path.join(viteInputDir(root), '_entry.ts');
 		const entry = fs.readFileSync(entryPath, 'utf8');
 		try {
 			fs.writeFileSync(
@@ -217,7 +217,7 @@ async function createGeneratedFixture(
 }
 
 async function startServer(root: string): Promise<{ url: string; close(): Promise<void> }> {
-	const entryPath = path.join(cloudflareViteInputDir(root), '_entry.ts');
+	const entryPath = path.join(viteInputDir(root), '_entry.ts');
 	const viteConfig = createCloudflareViteConfig(root, cloudflareViteConfigPath(root), [entryPath], {
 		persistState: false,
 	});
