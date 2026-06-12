@@ -590,7 +590,7 @@ export class SubmissionTimeoutError extends FlueError {
 			type: 'submission_timeout',
 			message: 'Submission exceeded the configured timeout.',
 			details: 'The operation ran longer than the configured durability timeout.',
-			dev: 'The timeout is configured in minutes via the agent definition\'s `durability.timeout`.',
+			dev: 'The timeout is configured in milliseconds via the agent definition\'s `durability.timeoutMs`.',
 		});
 	}
 }

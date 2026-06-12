@@ -28,8 +28,8 @@ import {
 	type TaskToolResultDetails,
 } from './agent.ts';
 import {
-	DURABILITY_DEFAULT_MAX_RETRY,
-	DURABILITY_DEFAULT_TIMEOUT_MINUTES,
+	DURABILITY_DEFAULT_MAX_ATTEMPTS,
+	DURABILITY_DEFAULT_TIMEOUT_MS,
 	type AgentSubmissionStore,
 	type SubmissionDurability,
 } from './agent-execution-store.ts';
@@ -2121,11 +2121,11 @@ export class Session implements FlueSession {
 
 	private resolveSubmissionDurability(startedAt?: number, timeoutAt?: number): SubmissionDurability {
 		return {
-			maxRetry: this.config.durability?.retry ?? DURABILITY_DEFAULT_MAX_RETRY,
+			maxRetry: this.config.durability?.maxAttempts ?? DURABILITY_DEFAULT_MAX_ATTEMPTS,
 			timeoutAt:
 				timeoutAt ??
 				(startedAt ?? Date.now()) +
-					(this.config.durability?.timeout ?? DURABILITY_DEFAULT_TIMEOUT_MINUTES) * 60_000,
+					(this.config.durability?.timeoutMs ?? DURABILITY_DEFAULT_TIMEOUT_MS),
 		};
 	}
 

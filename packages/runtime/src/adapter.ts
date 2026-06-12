@@ -33,8 +33,8 @@ export type {
 } from './agent-execution-store.ts';
 
 export {
-	DURABILITY_DEFAULT_MAX_RETRY,
-	DURABILITY_DEFAULT_TIMEOUT_MINUTES,
+	DURABILITY_DEFAULT_MAX_ATTEMPTS,
+	DURABILITY_DEFAULT_TIMEOUT_MS,
 	LEASE_DURATION_MS,
 } from './agent-execution-store.ts';
 

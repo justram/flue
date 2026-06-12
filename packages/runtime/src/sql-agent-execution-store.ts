@@ -24,8 +24,8 @@ import type {
 } from './agent-execution-store.ts';
 import type { SqlStorage } from './sql-storage.ts';
 import {
-	DURABILITY_DEFAULT_MAX_RETRY,
-	DURABILITY_DEFAULT_TIMEOUT_MINUTES,
+	DURABILITY_DEFAULT_MAX_ATTEMPTS,
+	DURABILITY_DEFAULT_TIMEOUT_MS,
 	LEASE_DURATION_MS,
 } from './agent-execution-store.ts';
 import {
@@ -610,7 +610,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 
 	async claimSubmission(claim: SubmissionClaimRef): Promise<AgentSubmission | null> {
 		const now = Date.now();
-		const timeoutAt = now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000;
+		const timeoutAt = now + DURABILITY_DEFAULT_TIMEOUT_MS;
 		const row = this.sql
 			.exec(
 				`UPDATE flue_agent_submissions AS current
@@ -628,7 +628,7 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 				 RETURNING ${submissionColumns}`,
 				claim.attemptId,
 				now,
-				DURABILITY_DEFAULT_MAX_RETRY,
+				DURABILITY_DEFAULT_MAX_ATTEMPTS,
 				timeoutAt,
 				claim.ownerId,
 				claim.leaseExpiresAt,
@@ -650,8 +650,8 @@ class AgentSubmissionStoreImpl implements AgentSubmissionStore {
 			 WHERE submission_id = ? AND status = 'running' AND attempt_id = ?
 			 RETURNING submission_id`,
 			Date.now(),
-			durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_RETRY,
-			durability?.timeoutAt ?? Date.now() + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000,
+			durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_ATTEMPTS,
+			durability?.timeoutAt ?? Date.now() + DURABILITY_DEFAULT_TIMEOUT_MS,
 			attempt.submissionId,
 			attempt.attemptId,
 		);
@@ -1150,7 +1150,7 @@ function ensureSubmissionTable(sql: SqlStorage): void {
 		 settled_at INTEGER,
 		 error TEXT,
 		 attempt_count INTEGER NOT NULL DEFAULT 0,
-		 max_retry INTEGER NOT NULL DEFAULT ${DURABILITY_DEFAULT_MAX_RETRY},
+		 max_retry INTEGER NOT NULL DEFAULT ${DURABILITY_DEFAULT_MAX_ATTEMPTS},
 		 timeout_at INTEGER NOT NULL DEFAULT 0,
 		 owner_id TEXT,
 		 lease_expires_at INTEGER NOT NULL DEFAULT 0

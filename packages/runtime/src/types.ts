@@ -280,17 +280,19 @@ export interface CompactionConfig {
 
 export interface DurabilityConfig {
 	/**
-	 * Maximum recovery attempts before the submission is terminalized as
-	 * failed. Each DO reset or deploy that interrupts a running submission
-	 * counts as one attempt. Defaults to 10.
+	 * Maximum total attempts before the submission is terminalized as
+	 * failed. The initial run counts as the first attempt; each DO reset or
+	 * deploy that interrupts a running submission consumes another.
+	 * Defaults to 10.
 	 */
-	retry?: number;
+	maxAttempts?: number;
 	/**
-	 * Maximum wall-clock minutes for a single submission. Submissions that
-	 * exceed this limit are aborted and settled as failed. Defaults to 60.
-	 * Set higher for long-running agents (e.g. 360 for a 6-hour agent).
+	 * Maximum wall-clock milliseconds for a single submission. Submissions
+	 * that exceed this limit are aborted and settled as failed. Defaults to
+	 * 3,600,000 (one hour). Set higher for long-running agents (e.g.
+	 * 21,600,000 for a 6-hour agent).
 	 */
-	timeout?: number;
+	timeoutMs?: number;
 }
 
 // ─── Provider Runtime Settings ──────────────────────────────────────────────

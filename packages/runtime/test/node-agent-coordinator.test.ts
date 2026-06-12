@@ -150,7 +150,7 @@ function createRealCoordinator(
 function createFauxCoordinator(
 	dbPath: string,
 	provider: FauxProviderRegistration,
-	durability?: { retry?: number; timeout?: number },
+	durability?: { maxAttempts?: number; timeoutMs?: number },
 ): { coordinator: NodeAgentCoordinator; executionStore: AgentExecutionStore } {
 	const executionStore = openExecutionStore(dbPath);
 	const agent = createAgent(() => ({
@@ -342,8 +342,8 @@ leaseExpiresAt: 1,
 			const provider = createFauxProvider();
 			provider.setResponses([fauxAssistantMessage('Done.')]);
 			const { coordinator, executionStore } = createFauxCoordinator(dbPath, provider, {
-				retry: 3,
-				timeout: 120,
+				maxAttempts: 3,
+				timeoutMs: 7_200_000,
 			});
 
 			const input = makeDispatchInput();
@@ -352,7 +352,7 @@ leaseExpiresAt: 1,
 
 			const submission = await executionStore.submissions.getSubmission(input.dispatchId);
 			expect(submission?.maxRetry).toBe(3);
-			expect(submission?.timeoutAt).toBeGreaterThanOrEqual((submission?.startedAt ?? 0) + 120 * 60_000);
+			expect(submission?.timeoutAt).toBeGreaterThanOrEqual((submission?.startedAt ?? 0) + 7_200_000);
 		});
 
 		it('terminalizes a submission after the configured timeout expires', async () => {

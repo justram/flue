@@ -187,30 +187,38 @@ describe('defineAgentProfile()', () => {
 	});
 
 	it('accepts valid durability config on a profile', () => {
-		expect(() => defineAgentProfile({ durability: { retry: 5, timeout: 360 } })).not.toThrow();
+		expect(() =>
+			defineAgentProfile({ durability: { maxAttempts: 5, timeoutMs: 21_600_000 } }),
+		).not.toThrow();
 		expect(() => defineAgentProfile({ durability: {} })).not.toThrow();
 	});
 
 	it('rejects durability config with unknown fields', () => {
 		expect(() =>
-			defineAgentProfile({ durability: { retry: 5, unknown: true } } as never),
+			defineAgentProfile({ durability: { maxAttempts: 5, unknown: true } } as never),
 		).toThrow('unknown field "unknown"');
 	});
 
-	it('rejects durability config with non-positive retry', () => {
-		expect(() => defineAgentProfile({ durability: { retry: 0 } })).toThrow('positive integer');
-		expect(() => defineAgentProfile({ durability: { retry: -1 } })).toThrow('positive integer');
-		expect(() => defineAgentProfile({ durability: { retry: 1.5 } })).toThrow('positive integer');
+	it('rejects durability config with non-positive maxAttempts', () => {
+		expect(() => defineAgentProfile({ durability: { maxAttempts: 0 } })).toThrow(
+			'positive integer',
+		);
+		expect(() => defineAgentProfile({ durability: { maxAttempts: -1 } })).toThrow(
+			'positive integer',
+		);
+		expect(() => defineAgentProfile({ durability: { maxAttempts: 1.5 } })).toThrow(
+			'positive integer',
+		);
 	});
 
-	it('rejects durability config with non-positive timeout', () => {
-		expect(() => defineAgentProfile({ durability: { timeout: 0 } })).toThrow('positive integer');
-		expect(() => defineAgentProfile({ durability: { timeout: -1 } })).toThrow('positive integer');
+	it('rejects durability config with non-positive timeoutMs', () => {
+		expect(() => defineAgentProfile({ durability: { timeoutMs: 0 } })).toThrow('positive integer');
+		expect(() => defineAgentProfile({ durability: { timeoutMs: -1 } })).toThrow('positive integer');
 	});
 
 	it('accepts durability config when a created agent supplies it', async () => {
 		const harness = await createContext().init(
-			createAgent(() => ({ model: false, durability: { retry: 3, timeout: 120 } })),
+			createAgent(() => ({ model: false, durability: { maxAttempts: 3, timeoutMs: 7_200_000 } })),
 		);
 		expect(harness).toBeDefined();
 	});

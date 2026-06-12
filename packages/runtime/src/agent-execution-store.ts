@@ -14,10 +14,10 @@ import type { SessionStore } from './types.ts';
 
 // ─── Durability defaults ────────────────────────────────────────────────────
 
-/** Default maximum recovery attempts before terminalization. */
-export const DURABILITY_DEFAULT_MAX_RETRY = 10;
-/** Default submission timeout in minutes. */
-export const DURABILITY_DEFAULT_TIMEOUT_MINUTES = 60;
+/** Default maximum total attempts before terminalization. */
+export const DURABILITY_DEFAULT_MAX_ATTEMPTS = 10;
+/** Default submission timeout in milliseconds (one hour). */
+export const DURABILITY_DEFAULT_TIMEOUT_MS = 3_600_000;
 /** Default lease duration for submission ownership in milliseconds (30 seconds). */
 export const LEASE_DURATION_MS = 30_000;
 

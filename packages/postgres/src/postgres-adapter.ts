@@ -45,8 +45,8 @@ import {
 	decodeRunCursor,
 	deduplicateSessionDeletion,
 	DEFAULT_LIST_LIMIT,
-	DURABILITY_DEFAULT_MAX_RETRY,
-	DURABILITY_DEFAULT_TIMEOUT_MINUTES,
+	DURABILITY_DEFAULT_MAX_ATTEMPTS,
+	DURABILITY_DEFAULT_TIMEOUT_MS,
 	encodeRunCursor,
 	isSubmissionPayload,
 	LEASE_DURATION_MS,
@@ -263,7 +263,7 @@ async function ensureTables(runner: PgRunner): Promise<void> {
 				settled_at BIGINT,
 				error TEXT,
 				attempt_count INTEGER NOT NULL DEFAULT 0,
-				max_retry INTEGER NOT NULL DEFAULT ${DURABILITY_DEFAULT_MAX_RETRY},
+				max_retry INTEGER NOT NULL DEFAULT ${DURABILITY_DEFAULT_MAX_ATTEMPTS},
 				timeout_at BIGINT NOT NULL DEFAULT 0,
 				owner_id TEXT,
 				lease_expires_at BIGINT NOT NULL DEFAULT 0
@@ -684,7 +684,7 @@ class PgSubmissionStore implements AgentSubmissionStore {
 
 	async claimSubmission(claim: SubmissionClaimRef): Promise<AgentSubmission | null> {
 		const now = Date.now();
-		const timeoutAt = now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000;
+		const timeoutAt = now + DURABILITY_DEFAULT_TIMEOUT_MS;
 
 		// Postgres does not support `UPDATE ... AS alias` with a self-referencing
 		// NOT EXISTS subquery the way SQLite does. Use a CTE to identify the
@@ -711,7 +711,7 @@ class PgSubmissionStore implements AgentSubmissionStore {
 			 WHERE flue_agent_submissions.sequence = candidate.sequence
 			   AND flue_agent_submissions.status = 'queued'
 			 RETURNING ${prefixed('flue_agent_submissions')}`,
-			[claim.attemptId, now, DURABILITY_DEFAULT_MAX_RETRY, timeoutAt, claim.ownerId, claim.leaseExpiresAt, claim.submissionId],
+			[claim.attemptId, now, DURABILITY_DEFAULT_MAX_ATTEMPTS, timeoutAt, claim.ownerId, claim.leaseExpiresAt, claim.submissionId],
 		);
 		return rows[0] ? parseSubmission(rows[0]) : null;
 	}
@@ -730,8 +730,8 @@ class PgSubmissionStore implements AgentSubmissionStore {
 			 RETURNING submission_id`,
 			[
 				now,
-				durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_RETRY,
-				durability?.timeoutAt ?? now + DURABILITY_DEFAULT_TIMEOUT_MINUTES * 60_000,
+				durability?.maxRetry ?? DURABILITY_DEFAULT_MAX_ATTEMPTS,
+				durability?.timeoutAt ?? now + DURABILITY_DEFAULT_TIMEOUT_MS,
 				attempt.submissionId,
 				attempt.attemptId,
 			],

@@ -82,10 +82,10 @@ Throws when the profile contains unknown fields, invalid capabilities, duplicate
 
 #### `DurabilityConfig`
 
-| Field     | Type     | Default | Description                                                                                                                                                                                                                                                                                  |
-| --------- | -------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `retry`   | `number` | `10`    | Maximum recovery attempts before the submission is terminalized as failed. Each interruption that requires a new attempt counts toward this limit.                                                                                                                                           |
-| `timeout` | `number` | `60`    | Maximum wall-clock minutes for a single submission. Submissions exceeding this limit are aborted and settled as failed. Set higher for long-running agents (e.g. `360` for a 6-hour agent). The timeout is checked cooperatively at turn boundaries, not preemptively during provider calls. |
+| Field         | Type     | Default   | Description                                                                                                                                                                                                                                                                                                          |
+| ------------- | -------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxAttempts` | `number` | `10`      | Maximum total attempts before the submission is terminalized as failed. The initial run counts as the first attempt; each interruption that requires a new attempt consumes another.                                                                                                                                 |
+| `timeoutMs`   | `number` | `3600000` | Maximum wall-clock milliseconds for a single submission. Submissions exceeding this limit are aborted and settled as failed. Set higher for long-running agents (e.g. `21_600_000` for a 6-hour agent). The timeout is checked cooperatively at turn boundaries, not preemptively during provider calls. |
 
 #### `CompactionConfig`
 
