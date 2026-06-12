@@ -462,6 +462,34 @@ describe('Cloudflare AI binding provider', () => {
 		]);
 	});
 
+	it('surfaces a provider error when the stream ends without a finish_reason', async () => {
+		const run = vi.fn(async () =>
+			createSseResponse('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'),
+		);
+		registerProvider('cloudflare-no-finish-reason', {
+			api: 'cloudflare-ai-binding',
+			binding: { run },
+		});
+		const model = resolveModel('cloudflare-no-finish-reason/@cf/meta/llama-3.1-8b-instruct');
+		expect(model).toBeDefined();
+		if (!model) throw new Error('Expected a resolved Workers AI model.');
+
+		const events = await collectEvents(
+			getCloudflareAIBindingApiProvider().streamSimple(model as Model<'cloudflare-ai-binding'>, {
+				messages: [],
+			}),
+		);
+
+		expect(events.at(-1)).toMatchObject({
+			type: 'error',
+			reason: 'error',
+			error: expect.objectContaining({
+				stopReason: 'error',
+				errorMessage: 'Stream ended without finish_reason',
+			}),
+		});
+	});
+
 	it('rejects a binding-backed model when no usable AI binding is attached', async () => {
 		const events = await collectEvents(
 			getCloudflareAIBindingApiProvider().streamSimple(

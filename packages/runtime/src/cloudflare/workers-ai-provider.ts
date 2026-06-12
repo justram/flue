@@ -343,6 +343,7 @@ const streamCloudflareWorkersAi: StreamFunction<CloudflareAIBindingApi, SimpleSt
 			stream.push({ type: 'start', partial: output });
 
 			let currentBlock: StreamingBlock | null = null;
+			let hasFinishReason = false;
 			const blocks = output.content as StreamingBlock[];
 			const indexOf = (block: StreamingBlock | null): number =>
 				block ? blocks.indexOf(block) : -1;
@@ -397,6 +398,7 @@ const streamCloudflareWorkersAi: StreamFunction<CloudflareAIBindingApi, SimpleSt
 					const mapped = mapStopReason(choice.finish_reason);
 					output.stopReason = mapped.stopReason;
 					if (mapped.errorMessage) output.errorMessage = mapped.errorMessage;
+					hasFinishReason = true;
 				}
 
 				const delta = choice.delta;
@@ -507,6 +509,9 @@ const streamCloudflareWorkersAi: StreamFunction<CloudflareAIBindingApi, SimpleSt
 			}
 			if (output.stopReason === 'error') {
 				throw new Error(output.errorMessage ?? 'Provider returned an error stop reason');
+			}
+			if (!hasFinishReason) {
+				throw new Error('Stream ended without finish_reason');
 			}
 
 			stream.push({ type: 'done', reason: output.stopReason, message: output });
