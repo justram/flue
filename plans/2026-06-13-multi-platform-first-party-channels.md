@@ -1844,6 +1844,176 @@ Final reference gap audit:
   credential and installation-state concerns.
 - No justified verified HTTP ingress gap remains.
 
+### Telegram — 2026-06-13
+
+Status:
+
+- Complete.
+
+Reference capability brief:
+
+- The high-level adapter documentation describes Bot API webhooks, optional
+  polling, messages and mentions, inline-keyboard callbacks, reactions,
+  typing, edits, deletion, uploads, rich outbound formatting, and
+  process-local cached history.
+- No reference implementation, architecture, types, package declarations,
+  fixtures, payloads, snapshots, sample messages, or tests were consulted.
+
+Primary sources:
+
+- Telegram Bot API 10.1 `Update`, `Message`, callback-query, reaction,
+  `setWebhook`, `getUpdates`, `sendMessage`, business-message, guest-mode,
+  forum-topic, and channel direct-message-topic documentation.
+- Telegram's official webhook guide and Bot FAQ for delivery, retry,
+  duplicate, and webhook-versus-polling behavior.
+- Current grammY Cloudflare Workers deployment documentation.
+- Current `grammy@1.43.0` and `@grammyjs/types@3.27.3` package metadata,
+  declarations, browser export, and official package source.
+
+Clean-room affirmation:
+
+- All public types, normalized update families, synthetic webhook values,
+  fake ids, timestamps, assertions, and tests were designed from Telegram's
+  primary sources and Flue's existing channel contract. Nothing was copied or
+  translated from Chat SDK source, architecture, types, fixtures, payloads,
+  snapshots, sample messages, or tests.
+
+Decisions:
+
+- Add `@flue/telegram` and `flue add telegram`.
+- Publish one `POST /channels/<file>/webhook` route. Telegram sends one
+  JSON-serialized `Update` per webhook request.
+- Require the documented `secret_token` even though Telegram makes it
+  optional. Verify `X-Telegram-Bot-Api-Secret-Token` before body parsing using
+  fixed-length Web Crypto digests.
+- Do not imply body-signature, timestamp, or replay protection that Telegram
+  does not provide. Expose `updateId` for application-owned ordering and
+  duplicate admission, and document that secrets must not be reused across
+  bots.
+- Normalize ordinary and edited messages, channel posts, business messages,
+  guest messages, callback queries, individual reactions, and aggregate
+  reaction counts. Preserve exactly one unsupported verified Update field as
+  an explicit unknown variant.
+- Normalize leading bot commands from Telegram's UTF-16 entity offsets and
+  preserve the complete verified Update under `raw`.
+- Distinguish regular and business chat identity because Telegram documents
+  that those chat-id spaces may overlap. Preserve forum-thread and channel
+  direct-message-topic identity.
+- Do not create durable conversation identity for guest messages.
+  `capabilities.guestQueryId` is a short-lived reply capability, not a stable
+  destination.
+  Inline callback queries similarly omit conversation identity when Telegram
+  supplies no accessible message.
+- Keep normal Hono and Fetch response behavior: `undefined` becomes an empty
+  `200`, JSON-compatible values become webhook response bodies, and
+  `Response` values pass through. JSON responses may use Telegram's documented
+  webhook-reply Bot API method format.
+- Use grammY's full project-owned `Api` client for outbound behavior. Its
+  browser/Fetch export executes in Node and workerd without `nodejs_compat`.
+
+Tests:
+
+- Added original synthetic commands, regular and business chats, guest
+  messages, accessible and inline callback queries, individual and aggregate
+  reactions, unknown updates, and topic identities with distinct fake users,
+  chats, messages, callbacks, business connections, and update ids.
+- Covered valid, missing, and changed secret headers, content types, body
+  limits, malformed and multi-field Update envelopes, required known-payload
+  relationships, response serialization, Hono status control, handler
+  failure, and canonical-key round trips.
+- Added permanent workerd verification of secret-digest comparison and
+  channel direct-message-topic normalization without Node compatibility.
+- Added permanent workerd execution of the real grammY `Api` browser export,
+  exercising regular and business `sendMessage` requests against an injected
+  fake Fetch transport without Node compatibility.
+
+Validation:
+
+- Package build, strict typecheck, 12 Node protocol tests, and workerd ingress
+  tests pass.
+- Example strict typecheck, real grammY workerd test, Node build, and
+  Cloudflare build pass. Both builds discover exactly one `telegram` channel.
+- A built Node server returned empty `200` for an original verified unknown
+  delivery and `401` for the same route with a changed secret header.
+- Documentation check and production build pass.
+- The real `flue add` CLI test suite passes and verifies the Telegram route,
+  grammY dependency, and Workers compatibility guidance.
+- Knip, scoped Biome lint, and whitespace validation pass.
+- Prepared publish docs were generated for all public packages.
+- The packed package contains the intended runtime declarations, JavaScript,
+  README, license metadata, and prepared docs without an outbound client or
+  model tool.
+- A clean strict TypeScript consumer compiles against the packed tarball and
+  narrows message and callback variants plus conversation identity.
+
+Focused review:
+
+- Reviewed the complete provider implementation for header verification,
+  one-Update semantics, known-payload relationships, command offsets, regular
+  versus business identity, guest capability boundaries, response behavior,
+  grammY workerd execution, declarations, and documentation.
+- Moved secret comparison to fixed-length Web Crypto digests.
+- Required exactly one accessible or inline message form on callback queries
+  and exactly one user or actor-chat form on reaction updates.
+- Corrected a test whose low body limit initially masked malformed-envelope
+  behavior.
+- No unresolved correctness findings remain.
+
+Deviations:
+
+- The initial brief left direct typed Fetch versus a maintained SDK open.
+  grammY now publishes an explicit browser/Fetch export, documents Cloudflare
+  Workers deployment, and executed its real `Api` client in workerd without
+  compatibility flags. The canonical project path therefore exports grammY's
+  full client instead of maintaining a narrow Flue example client.
+- Telegram permits omitting `secret_token`; Flue requires it because an
+  unauthenticated webhook route would violate the verified-ingress product
+  boundary.
+- The initial brief focused on chats, message threads, users, and forum topics.
+  Current Bot API documentation adds business-id collision warnings, guest
+  reply capabilities, and channel direct-message topics, so the public
+  identity model includes the stable business and direct-topic dimensions and
+  intentionally excludes guest capabilities.
+
+Deferrals:
+
+- Webhook registration, deletion, certificate upload, allowed-update
+  selection, pending-update policy, and bot-token rotation remain
+  application-owned deployment behavior through grammY.
+- Long polling and webhook-versus-polling lifecycle control remain outside the
+  HTTP channel package.
+- Mentions, rich entities, service messages, polls, inline queries, payments,
+  membership changes, business-connection lifecycle, purchases, checklists,
+  and future Update families remain available through the verified `raw`
+  payload or explicit unknown variant until a typed Flue projection is
+  justified.
+- Edits, deletion, typing, reactions, uploads, MarkdownV2 policy, keyboards,
+  media, streaming, guest replies, and broader Bot API operations remain
+  project-owned grammY behavior rather than Flue abstractions.
+- Telegram does not expose complete bot message history. Flue does not add
+  process-local message caching to this stateless ingress package.
+- No live bot, BotFather configuration, token, webhook, or provider request
+  was used in automated or manual validation.
+
+Final reference gap audit:
+
+- Reopened only the pinned high-level Telegram adapter README after
+  implementation; no reference source, declarations, fixtures, payloads,
+  sample messages, or tests were used.
+- Verified webhook messages, channel posts, edits, business messages, guest
+  messages, callbacks, commands, and reactions are represented. Mentions and
+  other entity policy remain application behavior over the verified message
+  text and raw Update.
+- Posting is demonstrated through the project-owned full grammY client.
+  Editing, deletion, reactions, typing, uploads, keyboards, formatting,
+  streaming, guest replies, and other broad outbound capabilities remain
+  project-owned SDK behavior.
+- Polling is deliberately excluded because Telegram makes it mutually
+  exclusive with webhook delivery and Flue channels own HTTP ingress.
+- Reference-cached history and formatting abstractions are not provider
+  ingress capabilities and do not justify Flue-owned state or rendering.
+- No justified verified HTTP ingress gap remains.
+
 ## Implementation log template
 
 Append one section per provider while implementing:

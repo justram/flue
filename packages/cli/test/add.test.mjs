@@ -50,6 +50,7 @@ before(async () => {
 			teams: 'channel--teams.md',
 			'google-chat': 'channel--google-chat.md',
 			linear: 'channel--linear.md',
+			telegram: 'channel--telegram.md',
 		};
 		const file = slug ? files[slug] : undefined;
 		if (!file) {
@@ -87,6 +88,10 @@ describe('flue add', () => {
 			/flue add google-chat\s+channel\s+https:\/\/developers\.google\.com\/workspace\/chat/,
 		);
 		assert.match(result.stderr, /flue add linear\s+channel\s+https:\/\/linear\.app\/developers/);
+		assert.match(
+			result.stderr,
+			/flue add telegram\s+channel\s+https:\/\/core\.telegram\.org\/bots\/api/,
+		);
 		assert.ok(result.stderr.includes('flue add <url> --category sandbox'));
 		assert.ok(result.stderr.includes('flue add <url> --category channel'));
 	});
@@ -120,6 +125,17 @@ describe('flue add', () => {
 		assert.ok(result.stdout.includes('export const client'));
 		assert.ok(result.stdout.includes('/channels/linear/webhook'));
 		assert.ok(result.stdout.includes('@linear/sdk@^86.0.0'));
+		assert.ok(result.stdout.includes('nodejs_compat'));
+	});
+
+	it('prints the Telegram recipe with verified ingress and the Workers client path', async () => {
+		const result = await runCli(['add', 'telegram', '--print']);
+		assert.equal(result.code, 0);
+		assert.ok(result.stdout.startsWith('# Add a Telegram Channel to Flue'));
+		assert.ok(result.stdout.includes('export const channel'));
+		assert.ok(result.stdout.includes('export const client'));
+		assert.ok(result.stdout.includes('/channels/telegram/webhook'));
+		assert.ok(result.stdout.includes('grammy@^1.43.0'));
 		assert.ok(result.stdout.includes('nodejs_compat'));
 	});
 

@@ -53,6 +53,7 @@ flue add discord --print | codex
 flue add teams --print | codex
 flue add google-chat --print | codex
 flue add linear --print | codex
+flue add telegram --print | codex
 flue add @cloudflare/shell --print | opencode
 flue add https://e2b.dev --category sandbox --print | claude
 flue add ./vendor/provider-docs --category sandbox --print | codex
