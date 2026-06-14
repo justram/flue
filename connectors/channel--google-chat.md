@@ -76,20 +76,21 @@ export const channel = createGoogleChatChannel({
     },
 
     // Path: /channels/google-chat/interactions
-    async handler({ event }) {
-      switch (event.type) {
-        case 'message':
-        case 'app_command': {
-          if (!event.destination) return;
+    async handler({ c, payload }) {
+      switch (payload.type) {
+        case 'MESSAGE':
+        case 'APP_COMMAND': {
+          const ref = conversationFromPayload(payload);
+          if (!ref) return;
           await dispatch(assistant, {
-            id: channel.conversationKey(event.destination),
+            id: channel.conversationKey(ref),
             input: {
-              type: `google-chat.${event.type}`,
-              user: event.user,
-              payload: event.payload,
+              type: `google-chat.${payload.type}`,
+              user: payload.user,
+              payload,
             },
           });
-          return;
+          return c.body(null, 200);
         }
         default:
           return;
@@ -104,11 +105,34 @@ export const channel = createGoogleChatChannel({
   //     audience: process.env.GOOGLE_CHAT_PUBSUB_AUDIENCE!,
   //     serviceAccountEmail: process.env.GOOGLE_CHAT_PUBSUB_SERVICE_ACCOUNT!,
   //   },
-  //   async handler({ event }) {
-  //     // Handle Workspace Events delivered through authenticated Pub/Sub push.
+  //   async handler({ c, delivery }) {
+  //     // Decode delivery.message.data after deduplicating delivery.message.messageId.
+  //     return c.body(null, 200);
   //   },
   // },
 });
+
+function conversationFromPayload(payload: {
+  space?: { name?: string; spaceType?: GoogleChatConversationRef['spaceType'] };
+  message?: {
+    space?: { name?: string; spaceType?: GoogleChatConversationRef['spaceType'] };
+    thread?: { name?: string };
+  };
+  thread?: { name?: string };
+}): GoogleChatConversationRef | undefined {
+  const space = payload.space ?? payload.message?.space;
+  if (!space?.name || !/^spaces\/[^/]+$/.test(space.name)) return;
+  const thread = payload.message?.thread?.name ?? payload.thread?.name;
+  if (thread !== undefined) {
+    const match = /^(spaces\/[^/]+)\/threads\/[^/]+$/.exec(thread);
+    if (!match || match[1] !== space.name) return;
+  }
+  return {
+    space: space.name,
+    ...(thread === undefined ? {} : { thread }),
+    ...(space.spaceType === undefined ? {} : { spaceType: space.spaceType }),
+  };
+}
 
 export function postMessage(ref: GoogleChatConversationRef) {
   return defineTool({
@@ -128,15 +152,25 @@ export function postMessage(ref: GoogleChatConversationRef) {
 }
 ```
 
-Direct interactions expose typed message, space-membership, card-click,
-command, app-home, and form-submit variants. Other authenticated direct
-interaction types arrive as `type: 'unknown'`. Workspace Events expose typed
-message, membership, reaction, space, and subscription-lifecycle families,
-plus `type: 'unknown'`.
+Direct callbacks receive `{ c, payload }`. `payload` preserves Google Chat's
+native field names and uppercase discriminants such as `MESSAGE`,
+`ADDED_TO_SPACE`, `CARD_CLICKED`, and `APP_COMMAND`; future authenticated types
+are passed through without conversion. Derive the canonical space from
+`payload.space.name` or `payload.message.space.name`, derive descriptive metadata
+from `space.spaceType` rather than the deprecated `space.type`, and accept a
+thread only when its resource name belongs to that exact space.
+
+Workspace Event callbacks receive `{ c, delivery }`, preserving the complete
+Pub/Sub push wrapper. The CloudEvent attributes remain under
+`delivery.message.attributes`, and its JSON data remains base64-encoded in
+`delivery.message.data` for application-owned decoding.
 
 Returning nothing produces an empty `200`; returning JSON produces the direct
 Google Chat response body; return a normal Hono or Fetch `Response` for
-explicit status control.
+explicit status control. Google Chat requires the direct endpoint to respond
+within 30 seconds. The package deliberately does not race the callback against
+a non-cancelling timeout, so keep admission short and move durable work behind
+the dispatch boundary.
 
 ## Wire the agent
 
@@ -170,14 +204,20 @@ Google Chat also supports the legacy project-number token format. Use
 application is configured for that documented mode.
 
 For all-message delivery, create a Google Workspace Events subscription backed
-by a Pub/Sub push subscription with authentication enabled. Set its audience
-to the exact `/channels/google-chat/events` URL and configure the same audience
-and push service-account email in `workspaceEvents.authentication`. Grant the
-Google Chat publishing service account access to the topic as required by
-Google's setup documentation.
+by a Pub/Sub push subscription with authentication enabled. The `/events`
+route requires the standard wrapped Pub/Sub push body; do not unwrap the
+CloudEvent before forwarding it. Set the push audience to the exact
+`/channels/google-chat/events` URL and configure the same audience and push
+service-account email in `workspaceEvents.authentication`. Grant the Google
+Chat publishing service account access to the topic as required by Google's
+setup documentation.
 
 Set `GOOGLE_CHAT_PUBSUB_SUBSCRIPTION` to the exact
-`projects/<project>/subscriptions/<subscription>` push resource.
+`projects/<project>/subscriptions/<subscription>` push resource. The Pub/Sub
+acknowledgement deadline is configurable; set it for the application's admission work. Pub/Sub
+retries unacknowledged or failed pushes, and the package does not deduplicate
+them: atomically claim `delivery.message.messageId` before dispatch. Treat
+`delivery.deliveryAttempt` as retry metadata, not as a unique identity.
 
 `GOOGLE_CHAT_CLIENT_EMAIL` and `GOOGLE_CHAT_PRIVATE_KEY` come from the outbound
 service account. Follow the project's secret conventions and never invent
@@ -189,5 +229,6 @@ Run the project's typecheck and both Node and Cloudflare builds. Generate local
 RSA keys and signed OIDC or Chat service tokens. Test valid and invalid
 audience, issuer, expiry, signing key, token identity, event subject, body
 shape, and response behavior. Exercise service-account assertion signing,
-OAuth exchange construction, and one outbound message against an injected
-local Fetch transport. Do not contact Google services.
+OAuth exchange construction, thread/space mismatch rejection, and one outbound
+message against an injected fake Fetch transport in both Node and workerd. Make
+the fake fail on every unexpected URL so no test can contact Google services.

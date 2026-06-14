@@ -1,83 +1,230 @@
 ---
 title: Google Chat
 description: Receive authenticated Google Chat interactions and Workspace Events with a project-owned REST client.
+subtitle: Receive messages, commands, and space activity over authenticated HTTP, then reply to the trusted Google Chat conversation from application code.
+package:
+  name: '@flue/google-chat'
+  href: https://www.npmjs.com/package/@flue/google-chat
+lastReviewedAt: 2026-06-14
 ---
 
 ## Add Google Chat
 
-Run the Google Chat recipe through your coding agent:
+Add Google Chat as an inbound channel to any existing Flue project by running the
+following command in your terminal, or your coding agent of choice.
 
 ```sh
-flue add google-chat --print | codex
+flue add google-chat
 ```
 
-It installs `@flue/google-chat` for authenticated ingress and creates a
-project-owned Fetch client for outbound messages.
+The recipe installs and configures `@flue/google-chat` for authenticated inbound
+requests and `jose` for a project-owned outbound Fetch client. After running the
+command, you will have a new `src/channels/google-chat.ts` module exporting
+`channel`, `client`, and an application-owned message tool.
 
-Google's current `google-auth-library` package targets Node and brings
-Node-oriented authentication and HTTP dependencies. The recipe uses Google's
-documented service-account JWT assertion, OAuth token exchange, and Chat REST
-protocols through Fetch so the integration runs on Node and Cloudflare Workers.
+## Configure Google Chat
 
-Set the Google Chat app's HTTP endpoint URL to:
+Configure only the credentials for the surfaces your application uses:
+
+| Surface                  | Variable                             | Purpose                                                                                     |
+| ------------------------ | ------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Direct ingress           | `GOOGLE_CHAT_APP_URL`                | Exact public interaction endpoint used as the Google OIDC token audience.                   |
+| Pub/Sub ingress          | `GOOGLE_CHAT_PUBSUB_SUBSCRIPTION`    | Exact `projects/<project>/subscriptions/<subscription>` resource required in the push body. |
+| Pub/Sub ingress          | `GOOGLE_CHAT_PUBSUB_AUDIENCE`        | Exact audience configured on the authenticated Pub/Sub push subscription.                   |
+| Pub/Sub ingress          | `GOOGLE_CHAT_PUBSUB_SERVICE_ACCOUNT` | Verifies the service-account identity in the Pub/Sub push OIDC token.                       |
+| Outbound service account | `GOOGLE_CHAT_CLIENT_EMAIL`           | Identifies the service account used to request a `chat.bot` access token.                   |
+| Outbound service account | `GOOGLE_CHAT_PRIVATE_KEY`            | Signs the service-account JWT assertion used for the OAuth token exchange.                  |
+
+Set the Google Chat app connection to **HTTP endpoint URL** and use the full
+public interaction route:
 
 ```txt
 https://example.com/channels/google-chat/interactions
 ```
 
-Set `GOOGLE_CHAT_APP_URL` to that exact URL.
-`GOOGLE_CHAT_CLIENT_EMAIL` and `GOOGLE_CHAT_PRIVATE_KEY` authenticate the
-project-owned outbound client.
+Set `GOOGLE_CHAT_APP_URL` to that exact URL. With endpoint-URL authentication,
+`@flue/google-chat` verifies Google's signature, issuer, expiration, exact
+audience, and `chat@system.gserviceaccount.com` identity before invoking the
+handler. The package also supports Google's project-number authentication mode;
+see the [API reference](/docs/api/google-chat-channel/) when the Chat app is
+configured for that mode.
 
-## Channel module
+For Workspace Events, the audience and service-account email must match the
+Pub/Sub push subscription's OIDC configuration. The subscription variable must
+match the exact subscription resource in every push body.
+
+## Supported Webhooks
+
+| Google surface                                                                                               | Webhook path                         |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
+| [Google Chat interaction events](https://developers.google.com/workspace/chat/receive-respond-interactions)  | `/channels/google-chat/interactions` |
+| [Google Workspace Events for Google Chat](https://developers.google.com/workspace/events/guides/events-chat) | `/channels/google-chat/events`       |
+
+Configure only the surfaces your application handles. Omitting `interactions` or
+`workspaceEvents` from `createGoogleChatChannel()` omits its route.
+
+### Google Chat interactions
 
 ```ts title="src/channels/google-chat.ts"
 import { createGoogleChatChannel, type GoogleChatConversationRef } from '@flue/google-chat';
-import { defineTool, dispatch } from '@flue/runtime';
+import { dispatch } from '@flue/runtime';
 import assistant from '../agents/assistant.ts';
-import { createGoogleChatClient } from '../lib/google-chat-client.ts';
-
-const appUrl = process.env.GOOGLE_CHAT_APP_URL!;
-
-export const client = createGoogleChatClient({
-  clientEmail: process.env.GOOGLE_CHAT_CLIENT_EMAIL!,
-  privateKey: process.env.GOOGLE_CHAT_PRIVATE_KEY!,
-});
 
 export const channel = createGoogleChatChannel({
   interactions: {
     authentication: {
       type: 'endpoint-url',
-      audience: appUrl,
+      audience: process.env.GOOGLE_CHAT_APP_URL!,
     },
+    async handler({ c, payload }) {
+      switch (payload.type) {
+        case 'MESSAGE':
+        case 'APP_COMMAND': {
+          const ref = conversationFromPayload(payload);
+          if (!ref) return c.body(null, 200);
 
-    // Path: /channels/google-chat/interactions
-    async handler({ event }) {
-      switch (event.type) {
-        case 'message':
-        case 'app_command': {
-          if (!event.destination) return;
           await dispatch(assistant, {
-            id: channel.conversationKey(event.destination),
+            id: channel.conversationKey(ref),
             input: {
-              type: `google-chat.${event.type}`,
-              user: event.user,
-              payload: event.payload,
+              type: `google-chat.${payload.type}`,
+              user: payload.user,
+              payload,
             },
           });
-          return;
+          return c.body(null, 200);
         }
         default:
-          return;
+          return c.body(null, 200);
       }
     },
   },
 });
 
+function conversationFromPayload(payload: {
+  space?: {
+    name?: string;
+    spaceType?: GoogleChatConversationRef['spaceType'];
+  };
+  message?: {
+    space?: {
+      name?: string;
+      spaceType?: GoogleChatConversationRef['spaceType'];
+    };
+    thread?: { name?: string };
+  };
+  thread?: { name?: string };
+}): GoogleChatConversationRef | undefined {
+  const space = payload.space ?? payload.message?.space;
+  if (!space?.name || !/^spaces\/[^/]+$/.test(space.name)) return;
+
+  const thread = payload.message?.thread?.name ?? payload.thread?.name;
+  if (thread !== undefined) {
+    const match = /^(spaces\/[^/]+)\/threads\/[^/]+$/.exec(thread);
+    if (!match || match[1] !== space.name) return;
+  }
+
+  return {
+    space: space.name,
+    ...(thread === undefined ? {} : { thread }),
+    ...(space.spaceType === undefined ? {} : { spaceType: space.spaceType }),
+  };
+}
+```
+
+The callback receives `{ c, payload }`. `payload` preserves Google Chat's native
+field names and uppercase discriminants such as `MESSAGE`, `ADDED_TO_SPACE`,
+`CARD_CLICKED`, and `APP_COMMAND`. Authenticated future types pass through
+without conversion, so the handler decides which interactions affect the
+application.
+
+Derive the canonical space from `payload.space.name` or
+`payload.message.space.name`. Use `space.spaceType` for descriptive metadata,
+not the deprecated `space.type`, and accept a thread only when its resource name
+belongs to that exact space. Conversation keys are identifiers, not
+authorization capabilities; see the shared [Channels guide](/docs/guide/channels/)
+for dispatch and authorization guidance.
+
+Google Chat requires the direct endpoint to respond within 30 seconds. The
+channel awaits the handler and does not race it against a timeout that would
+leave uncancelled work running. Keep admission short, dispatch durable work
+promptly, and return nothing or an explicit `200`. JSON-compatible return values
+become Google Chat response bodies, while `c` can create an explicit Hono
+response.
+
+### Workspace Events
+
+Direct interactions cover activity addressed to the Chat app. Use a Google
+Workspace Events subscription backed by an authenticated Pub/Sub push
+subscription for broader space activity such as messages, reactions,
+memberships, and space updates.
+
+```ts title="src/channels/google-chat.ts"
+export const channel = createGoogleChatChannel({
+  workspaceEvents: {
+    authentication: {
+      subscription: process.env.GOOGLE_CHAT_PUBSUB_SUBSCRIPTION!,
+      audience: process.env.GOOGLE_CHAT_PUBSUB_AUDIENCE!,
+      serviceAccountEmail: process.env.GOOGLE_CHAT_PUBSUB_SERVICE_ACCOUNT!,
+    },
+    async handler({ c, delivery }) {
+      const bytes = Uint8Array.from(atob(delivery.message.data), (value) => value.charCodeAt(0));
+      const event: unknown = JSON.parse(new TextDecoder().decode(bytes));
+
+      await handleWorkspaceEvent({
+        event,
+        attributes: delivery.message.attributes,
+        messageId: delivery.message.messageId,
+      });
+      return c.body(null, 200);
+    },
+  },
+});
+```
+
+The callback receives `{ c, delivery }`, preserving the complete Pub/Sub push
+wrapper. CloudEvent attributes remain in `delivery.message.attributes` and the
+`application/json` event remains a base64-encoded string in
+`delivery.message.data`. Decode the base64 bytes and then parse their UTF-8 JSON
+in application code, as shown above; the channel validates the envelope but
+does not replace it with a normalized event.
+
+Workspace Event subscriptions expire and can be suspended. Subscription
+lifecycle deliveries reach the same callback so application code can renew or
+repair the affected subscription. Creating and renewing subscriptions, storing
+their state, and any domain-wide delegation or user impersonation remain
+application concerns.
+
+## Outbound REST
+
+Outbound Google Chat operations belong to the generated project-owned Fetch
+client, not `@flue/google-chat`:
+
+```ts title="src/channels/google-chat.ts"
+import { createGoogleChatClient } from '../lib/google-chat-client.ts';
+
+export const client = createGoogleChatClient({
+  clientEmail: process.env.GOOGLE_CHAT_CLIENT_EMAIL!,
+  privateKey: process.env.GOOGLE_CHAT_PRIVATE_KEY!,
+});
+```
+
+The client signs a short-lived service-account assertion, exchanges it for a
+`chat.bot` access token, caches that token, and posts through the Google Chat
+REST API. It validates that a bound thread belongs to the bound space.
+
+## Google Chat Tools
+
+Use the client to define an application-owned tool whose destination and
+credentials are bound in trusted code:
+
+```ts title="src/channels/google-chat.ts"
+import type { GoogleChatConversationRef } from '@flue/google-chat';
+import { defineTool } from '@flue/runtime';
+
 export function postMessage(ref: GoogleChatConversationRef) {
   return defineTool({
     name: 'post_google_chat_message',
-    description: 'Post to the Google Chat conversation bound to this agent.',
+    description: 'Post a message to the Google Chat conversation bound to this agent.',
     parameters: {
       type: 'object',
       properties: { text: { type: 'string', minLength: 1 } },
@@ -92,16 +239,7 @@ export function postMessage(ref: GoogleChatConversationRef) {
 }
 ```
 
-The generated `lib/google-chat-client.ts` signs a short-lived service-account
-assertion, exchanges it for a `chat.bot` access token, caches the token, and
-sends messages to the trusted space and thread.
-
-Direct interactions have typed message, space-membership, card-action,
-app-command, app-home, and form-submit variants. Other authenticated types use
-`type: 'unknown'`. Return nothing for an empty `200`, return JSON for a Google
-Chat response body, or use the Hono context for explicit status control.
-
-## Bind the tool
+Bind the destination when creating the agent:
 
 ```ts title="src/agents/assistant.ts"
 import { createAgent } from '@flue/runtime';
@@ -113,65 +251,25 @@ export default createAgent(({ id }) => ({
 }));
 ```
 
-The model selects only message text. Trusted code binds the service account,
-space, and thread.
+The model selects only message text. It does not select arbitrary service
+accounts, spaces, threads, URLs, or REST operations.
 
-Conversation keys validate syntax, not authorization. Keep this agent
-dispatch-only, or independently authorize caller-selected instance ids before
-using them for outbound requests.
+## Delivery and runtime behavior
 
-## Workspace Events
+Returning `200` from the Workspace Events handler acknowledges the Pub/Sub push
+after the awaited admission work completes. Pub/Sub retries failed or
+unacknowledged pushes according to the subscription's delivery policy and
+configurable acknowledgement deadline.
 
-Direct interactions cover messages sent to the app, mentions, space
-membership changes involving the app, and interactive actions. To receive
-broader space activity such as all messages, reactions, membership changes, or
-space updates, create a Google Workspace Events subscription backed by an
-authenticated Pub/Sub push subscription.
+Use `delivery.message.messageId` as the Pub/Sub delivery identity. Atomically
+claim it in application-owned durable storage before dispatch when duplicate
+admission is unacceptable. `delivery.deliveryAttempt` is retry metadata, not a
+unique identifier. The channel is stateless and does not deduplicate Pub/Sub
+message ids, CloudEvent ids, or direct interactions.
 
-Enable the optional route in the channel:
-
-```ts
-workspaceEvents: {
-  authentication: {
-    subscription: process.env.GOOGLE_CHAT_PUBSUB_SUBSCRIPTION!,
-    audience: process.env.GOOGLE_CHAT_PUBSUB_AUDIENCE!,
-    serviceAccountEmail: process.env.GOOGLE_CHAT_PUBSUB_SERVICE_ACCOUNT!,
-  },
-
-  // Path: /channels/google-chat/events
-  async handler({ event }) {
-    await handleWorkspaceEvent(event);
-  },
-},
-```
-
-The subscription must match the exact
-`projects/<project>/subscriptions/<subscription>` resource in the push body.
-The audience and service-account email must match the authenticated push
-subscription's OIDC configuration. Flue also validates the CloudEvent source,
-subject, event type, and resource relationship before invoking the handler.
-
-Workspace Events expire and can be suspended. The route forwards typed
-subscription lifecycle events so application code can renew or repair the
-subscription. Creating subscriptions, domain-wide delegation, impersonation,
-and durable subscription state remain application concerns.
-
-## Authentication
-
-For endpoint-URL authentication, `@flue/google-chat` verifies:
-
-- Google's `RS256` signing key and signature;
-- the Google issuer, exact endpoint URL audience, and expiration;
-- the verified `chat@system.gserviceaccount.com` identity.
-
-The package also supports Google's project-number token format with
-`authentication: { type: 'project-number', projectNumber }`.
-
-For Workspace Events, the package independently verifies the Pub/Sub push OIDC
-token's issuer, audience, expiration, and configured service-account identity.
-
-The package does not deduplicate interaction ids, Pub/Sub message ids, or
-CloudEvent ids. Claim the relevant id in application-owned durable storage
-before dispatch when duplicate admission is unacceptable.
-
-See the [`@flue/google-chat` API reference](/docs/api/google-chat-channel/).
+`@flue/google-chat` ingress is tested in Node and workerd using Fetch and Web
+Crypto. The generated Fetch client is also exercised in both runtimes for
+service-account assertion signing, OAuth token exchange construction, and one
+threaded message request against a fail-closed fake transport. Cloudflare builds
+use Flue's required `nodejs_compat` setting. Validate any additional outbound
+operations your application adds.

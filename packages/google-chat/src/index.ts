@@ -44,15 +44,6 @@ export interface GoogleChatChannelOptions<E extends Env = Env> {
 	fetch?: typeof globalThis.fetch;
 	/** Maximum request-body size in bytes. Defaults to 1 MiB. */
 	bodyLimit?: number;
-	/** Direct interaction handler deadline. Defaults to 25 seconds; maximum 30 seconds. */
-	handlerTimeoutMs?: number;
-}
-
-export interface GoogleChatUserRef {
-	name: string;
-	displayName?: string;
-	type?: string;
-	domainId?: string;
 }
 
 export interface GoogleChatConversationRef {
@@ -60,146 +51,141 @@ export interface GoogleChatConversationRef {
 	space: string;
 	/** Optional thread resource name in `spaces/<id>/threads/<id>` form. */
 	thread?: string;
-	spaceType?: 'SPACE' | 'GROUP_CHAT' | 'DIRECT_MESSAGE' | 'UNKNOWN';
+	spaceType?: GoogleChatSpaceType;
 }
 
-export interface GoogleChatMessagePayload {
+export type GoogleChatSpaceType = 'SPACE' | 'GROUP_CHAT' | 'DIRECT_MESSAGE' | (string & {});
+
+export type GoogleChatDeprecatedSpaceType = 'ROOM' | 'DM' | (string & {});
+
+export interface GoogleChatSpace {
+	name?: string;
+	spaceType?: GoogleChatSpaceType;
+	type?: GoogleChatDeprecatedSpaceType;
+	[key: string]: unknown;
+}
+
+export interface GoogleChatThread {
+	name?: string;
+	[key: string]: unknown;
+}
+
+export interface GoogleChatUser {
+	name?: string;
+	displayName?: string;
+	type?: string;
+	domainId?: string;
+	[key: string]: unknown;
+}
+
+export interface GoogleChatMessage {
 	name?: string;
 	text?: string;
 	argumentText?: string;
 	formattedText?: string;
-	attachments: readonly unknown[];
-	annotations: readonly unknown[];
+	space?: GoogleChatSpace;
+	thread?: GoogleChatThread;
+	attachment?: readonly unknown[];
+	annotations?: readonly unknown[];
+	[key: string]: unknown;
 }
 
-export interface GoogleChatActionPayload {
+export interface GoogleChatAction {
 	actionMethodName?: string;
-	parameters: Readonly<Record<string, string>>;
-	formInputs?: unknown;
-	dialogEventType?: string;
-	isDialogEvent?: boolean;
+	parameters?: readonly { key?: string; value?: string; [key: string]: unknown }[];
+	[key: string]: unknown;
 }
 
-export interface GoogleChatAppCommandPayload {
-	commandId?: string;
-	commandType?: string;
-}
+export type GoogleChatInteractionType =
+	| 'MESSAGE'
+	| 'ADDED_TO_SPACE'
+	| 'REMOVED_FROM_SPACE'
+	| 'CARD_CLICKED'
+	| 'APP_COMMAND'
+	| 'APP_HOME'
+	| 'SUBMIT_FORM'
+	| 'WIDGET_UPDATED'
+	| (string & {});
 
-export interface GoogleChatInteractionEnvelope<TType extends string, TPayload> {
-	type: TType;
+export interface GoogleChatInteraction {
+	type: GoogleChatInteractionType;
 	eventTime?: string;
-	destination?: GoogleChatConversationRef;
-	user?: GoogleChatUserRef;
-	payload: TPayload;
-	/** Complete parsed interaction after request authentication. */
-	raw: unknown;
+	user?: GoogleChatUser;
+	space?: GoogleChatSpace;
+	message?: GoogleChatMessage;
+	thread?: GoogleChatThread;
+	action?: GoogleChatAction;
+	appCommandMetadata?: Record<string, unknown>;
+	common?: Record<string, unknown>;
+	[key: string]: unknown;
 }
 
-export type GoogleChatMessageInteraction = GoogleChatInteractionEnvelope<
-	'message',
-	GoogleChatMessagePayload
->;
-export type GoogleChatAddedToSpaceInteraction = GoogleChatInteractionEnvelope<
-	'added_to_space',
-	GoogleChatMessagePayload
->;
-export type GoogleChatRemovedFromSpaceInteraction = GoogleChatInteractionEnvelope<
-	'removed_from_space',
-	Record<string, never>
->;
-export type GoogleChatCardClickedInteraction = GoogleChatInteractionEnvelope<
-	'card_clicked',
-	GoogleChatActionPayload
->;
-export type GoogleChatAppCommandInteraction = GoogleChatInteractionEnvelope<
-	'app_command',
-	GoogleChatAppCommandPayload
->;
-export type GoogleChatAppHomeInteraction = GoogleChatInteractionEnvelope<
-	'app_home',
-	GoogleChatActionPayload
->;
-export type GoogleChatSubmitFormInteraction = GoogleChatInteractionEnvelope<
-	'submit_form',
-	GoogleChatActionPayload
->;
-export interface GoogleChatUnknownInteraction extends Omit<
-	GoogleChatInteractionEnvelope<'unknown', never>,
-	'payload'
-> {
-	interactionType: string;
-}
-
-export type GoogleChatInteraction =
-	| GoogleChatMessageInteraction
-	| GoogleChatAddedToSpaceInteraction
-	| GoogleChatRemovedFromSpaceInteraction
-	| GoogleChatCardClickedInteraction
-	| GoogleChatAppCommandInteraction
-	| GoogleChatAppHomeInteraction
-	| GoogleChatSubmitFormInteraction
-	| GoogleChatUnknownInteraction;
+export type GoogleChatWorkspaceEventType =
+	| 'google.workspace.chat.message.v1.created'
+	| 'google.workspace.chat.message.v1.updated'
+	| 'google.workspace.chat.message.v1.deleted'
+	| 'google.workspace.chat.message.v1.batchCreated'
+	| 'google.workspace.chat.message.v1.batchUpdated'
+	| 'google.workspace.chat.message.v1.batchDeleted'
+	| 'google.workspace.chat.membership.v1.created'
+	| 'google.workspace.chat.membership.v1.updated'
+	| 'google.workspace.chat.membership.v1.deleted'
+	| 'google.workspace.chat.membership.v1.batchCreated'
+	| 'google.workspace.chat.membership.v1.batchUpdated'
+	| 'google.workspace.chat.membership.v1.batchDeleted'
+	| 'google.workspace.chat.reaction.v1.created'
+	| 'google.workspace.chat.reaction.v1.deleted'
+	| 'google.workspace.chat.reaction.v1.batchCreated'
+	| 'google.workspace.chat.reaction.v1.batchDeleted'
+	| 'google.workspace.chat.space.v1.updated'
+	| 'google.workspace.chat.space.v1.deleted'
+	| 'google.workspace.chat.space.v1.batchUpdated'
+	| 'google.workspace.events.subscription.v1.suspended'
+	| 'google.workspace.events.subscription.v1.expirationReminder'
+	| 'google.workspace.events.subscription.v1.expired'
+	| (string & {});
 
 export interface GoogleChatCloudEventAttributes {
-	id: string;
-	source: string;
-	specVersion: '1.0';
-	subject: string;
-	time?: string;
-	dataContentType: 'application/json';
+	'ce-datacontenttype': 'application/json';
+	'ce-id': string;
+	'ce-source': string;
+	'ce-specversion': '1.0';
+	'ce-subject': string;
+	'ce-type': GoogleChatWorkspaceEventType;
+	'ce-time'?: string;
+	[key: string]: string | undefined;
 }
 
-export interface GoogleChatWorkspaceEventEnvelope<TType extends string> {
-	type: TType;
-	eventType: string;
+export interface GoogleChatPubSubMessage {
 	attributes: GoogleChatCloudEventAttributes;
-	pubsubMessageId: string;
+	data: string;
+	messageId: string;
 	publishTime?: string;
 	orderingKey?: string;
-	/** Chat destination. Absent for subscription lifecycle events. */
-	destination?: GoogleChatConversationRef;
-	/** Decoded CloudEvent JSON data. */
-	data: unknown;
-	/** Complete parsed Pub/Sub push body after request authentication. */
-	raw: unknown;
+	[key: string]: unknown;
 }
 
-export type GoogleChatWorkspaceEvent =
-	| GoogleChatWorkspaceEventEnvelope<'message_created'>
-	| GoogleChatWorkspaceEventEnvelope<'message_updated'>
-	| GoogleChatWorkspaceEventEnvelope<'message_deleted'>
-	| GoogleChatWorkspaceEventEnvelope<'message_batch_created'>
-	| GoogleChatWorkspaceEventEnvelope<'message_batch_updated'>
-	| GoogleChatWorkspaceEventEnvelope<'message_batch_deleted'>
-	| GoogleChatWorkspaceEventEnvelope<'membership_created'>
-	| GoogleChatWorkspaceEventEnvelope<'membership_updated'>
-	| GoogleChatWorkspaceEventEnvelope<'membership_deleted'>
-	| GoogleChatWorkspaceEventEnvelope<'membership_batch_created'>
-	| GoogleChatWorkspaceEventEnvelope<'membership_batch_updated'>
-	| GoogleChatWorkspaceEventEnvelope<'membership_batch_deleted'>
-	| GoogleChatWorkspaceEventEnvelope<'reaction_created'>
-	| GoogleChatWorkspaceEventEnvelope<'reaction_deleted'>
-	| GoogleChatWorkspaceEventEnvelope<'reaction_batch_created'>
-	| GoogleChatWorkspaceEventEnvelope<'reaction_batch_deleted'>
-	| GoogleChatWorkspaceEventEnvelope<'space_updated'>
-	| GoogleChatWorkspaceEventEnvelope<'space_batch_updated'>
-	| GoogleChatWorkspaceEventEnvelope<'subscription_suspended'>
-	| GoogleChatWorkspaceEventEnvelope<'subscription_expiration_reminder'>
-	| GoogleChatWorkspaceEventEnvelope<'subscription_expired'>
-	| GoogleChatWorkspaceEventEnvelope<'unknown'>;
+export interface GoogleChatWorkspaceEventDelivery {
+	message: GoogleChatPubSubMessage;
+	subscription: string;
+	deliveryAttempt?: number;
+	[key: string]: unknown;
+}
 
-type GoogleChatHandlerValue = undefined | JsonValue | Response;
-
-export type GoogleChatHandlerResult = GoogleChatHandlerValue | Promise<GoogleChatHandlerValue>;
+export type GoogleChatHandlerResult =
+	| undefined
+	| JsonValue
+	| Response
+	| Promise<undefined | JsonValue | Response>;
 
 export interface GoogleChatInteractionHandlerInput<E extends Env = Env> {
 	c: Context<E>;
-	event: GoogleChatInteraction;
+	payload: GoogleChatInteraction;
 }
 
 export interface GoogleChatWorkspaceEventHandlerInput<E extends Env = Env> {
 	c: Context<E>;
-	event: GoogleChatWorkspaceEvent;
+	delivery: GoogleChatWorkspaceEventDelivery;
 }
 
 export interface GoogleChatChannel<E extends Env = Env> {
@@ -229,7 +215,6 @@ export function createGoogleChatChannel<E extends Env = Env>(
 				handler: options.interactions.handler,
 				fetch: options.fetch,
 				bodyLimit: options.bodyLimit,
-				handlerTimeoutMs: options.handlerTimeoutMs,
 			}),
 		});
 	}
@@ -347,13 +332,11 @@ function validatePubSubAuthentication(authentication: GoogleChatPubSubAuthentica
 function assertConversationRef(ref: GoogleChatConversationRef): void {
 	if (!ref || typeof ref !== 'object') throw new InvalidGoogleChatInputError('ref');
 	if (!/^spaces\/[^/]+$/.test(ref.space)) throw new InvalidGoogleChatInputError('ref.space');
-	if (ref.thread !== undefined && !/^spaces\/[^/]+\/threads\/[^/]+$/.test(ref.thread)) {
-		throw new InvalidGoogleChatInputError('ref.thread');
+	if (ref.thread !== undefined) {
+		const match = /^(spaces\/[^/]+)\/threads\/[^/]+$/.exec(ref.thread);
+		if (!match || match[1] !== ref.space) throw new InvalidGoogleChatInputError('ref.thread');
 	}
-	if (
-		ref.spaceType !== undefined &&
-		!['SPACE', 'GROUP_CHAT', 'DIRECT_MESSAGE', 'UNKNOWN'].includes(ref.spaceType)
-	) {
+	if (ref.spaceType !== undefined && typeof ref.spaceType !== 'string') {
 		throw new InvalidGoogleChatInputError('ref.spaceType');
 	}
 }

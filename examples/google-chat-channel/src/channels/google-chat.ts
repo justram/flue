@@ -20,20 +20,21 @@ export const channel = createGoogleChatChannel({
 		},
 
 		// Path: /channels/google-chat/interactions
-		async handler({ event }) {
-			switch (event.type) {
-				case 'message':
-				case 'app_command': {
-					if (!event.destination) return;
+		async handler({ c, payload }) {
+			switch (payload.type) {
+				case 'MESSAGE':
+				case 'APP_COMMAND': {
+					const ref = conversationFromPayload(payload);
+					if (!ref) return;
 					await dispatch(assistant, {
-						id: channel.conversationKey(event.destination),
+						id: channel.conversationKey(ref),
 						input: {
-							type: `google-chat.${event.type}`,
-							user: event.user,
-							payload: event.payload,
+							type: `google-chat.${payload.type}`,
+							user: payload.user,
+							payload,
 						},
 					});
-					return;
+					return c.body(null, 200);
 				}
 				default:
 					return;
@@ -48,11 +49,42 @@ export const channel = createGoogleChatChannel({
 	//     audience: requiredEnv('GOOGLE_CHAT_PUBSUB_AUDIENCE'),
 	//     serviceAccountEmail: requiredEnv('GOOGLE_CHAT_PUBSUB_SERVICE_ACCOUNT'),
 	//   },
-	//   async handler({ event }) {
-	//     // Handle Workspace Events delivered through authenticated Pub/Sub push.
+	//   async handler({ c, delivery }) {
+	//     // Decode delivery.message.data after deduplicating delivery.message.messageId.
+	//     return c.body(null, 200);
 	//   },
 	// },
 });
+
+export function conversationFromPayload(payload: {
+	space?: {
+		name?: string;
+		spaceType?: GoogleChatConversationRef['spaceType'];
+		type?: unknown;
+	};
+	message?: {
+		space?: {
+			name?: string;
+			spaceType?: GoogleChatConversationRef['spaceType'];
+			type?: unknown;
+		};
+		thread?: { name?: string };
+	};
+	thread?: { name?: string };
+}): GoogleChatConversationRef | undefined {
+	const space = payload.space ?? payload.message?.space;
+	if (!space?.name || !/^spaces\/[^/]+$/.test(space.name)) return undefined;
+	const thread = payload.message?.thread?.name ?? payload.thread?.name;
+	if (thread !== undefined) {
+		const match = /^(spaces\/[^/]+)\/threads\/[^/]+$/.exec(thread);
+		if (!match || match[1] !== space.name) return undefined;
+	}
+	return {
+		space: space.name,
+		...(thread === undefined ? {} : { thread }),
+		...(space.spaceType === undefined ? {} : { spaceType: space.spaceType }),
+	};
+}
 
 export function postMessage(ref: GoogleChatConversationRef) {
 	return defineTool({

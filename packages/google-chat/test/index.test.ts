@@ -3,6 +3,7 @@ import { type CryptoKey, exportJWK, generateKeyPair, importPKCS8, SignJWT } from
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
 	createGoogleChatChannel,
+	type GoogleChatChannel,
 	InvalidGoogleChatConversationKeyError,
 	InvalidGoogleChatInputError,
 } from '../src/index.ts';
@@ -15,6 +16,7 @@ const PUBSUB_SUBSCRIPTION = 'projects/synthetic-project/subscriptions/google-cha
 const JWKS_URL = 'https://keys.example.test/google';
 const CERTIFICATES_URL = 'https://keys.example.test/chat-x509';
 const PROJECT_NUMBER = '456700123998';
+const encoder = new TextEncoder();
 
 const SYNTHETIC_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDfatQsxJCGlooR
@@ -75,118 +77,52 @@ beforeAll(async () => {
 });
 
 describe('createGoogleChatChannel()', () => {
-	it('normalizes a signed message interaction when endpoint-url authentication succeeds', async () => {
-		const handler = vi.fn(({ event }) => ({
-			type: event.type,
-			text: event.type === 'message' ? event.payload.text : undefined,
-		}));
-		const fetcher = createKeyFetcher();
-		const channel = createGoogleChatChannel({
-			fetch: fetcher,
-			interactions: {
-				authentication: {
-					type: 'endpoint-url',
-					audience: ENDPOINT_AUDIENCE,
-					jwksUrl: JWKS_URL,
-				},
-				handler,
+	it('passes a provider-native interaction through when endpoint authentication succeeds', async () => {
+		const payload = {
+			type: 'MESSAGE',
+			space: {
+				name: 'spaces/cobalt-lab',
+				spaceType: 'SPACE',
+				type: 'ROOM',
+				futureSpaceField: true,
 			},
-		});
-		const token = await signOidcToken({
-			audience: ENDPOINT_AUDIENCE,
-			email: CHAT_IDENTITY,
-		});
-		const response = await mount(channel).request('/interactions', {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${token}`,
-				'content-type': 'application/json',
+			message: {
+				text: 'summarize the launch notes',
+				thread: { name: 'spaces/cobalt-lab/threads/thread-15' },
+				futureMessageField: { preserved: true },
 			},
-			body: JSON.stringify({
-				type: 'MESSAGE',
-				eventTime: '2026-06-13T17:55:00Z',
-				user: {
-					name: 'users/visitor-42',
-					displayName: 'Synthetic Visitor',
-					type: 'HUMAN',
-				},
-				space: { name: 'spaces/cobalt-lab', type: 'SPACE' },
-				message: {
-					name: 'spaces/cobalt-lab/messages/message-77',
-					text: '@helper summarize the launch notes',
-					argumentText: 'summarize the launch notes',
-					thread: { name: 'spaces/cobalt-lab/threads/thread-15' },
-					annotations: [{ type: 'USER_MENTION' }],
-				},
-			}),
-		});
+			futureTopLevelField: 42,
+		};
+		const interactions = vi.fn(({ payload }) => ({ received: payload.type }));
+		const channel = endpointChannel(interactions);
+
+		const response = await app(channel).request('/interactions', await interactionInit(payload));
 
 		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({
-			type: 'message',
-			text: '@helper summarize the launch notes',
-		});
-		expect(handler).toHaveBeenCalledOnce();
-		const event = handler.mock.calls[0]?.[0].event;
-		expect(event.destination).toEqual({
-			space: 'spaces/cobalt-lab',
-			thread: 'spaces/cobalt-lab/threads/thread-15',
-			spaceType: 'SPACE',
-		});
-		expect(event.user).toEqual({
-			name: 'users/visitor-42',
-			displayName: 'Synthetic Visitor',
-			type: 'HUMAN',
-		});
-		expect(fetcher).toHaveBeenCalledOnce();
+		expect(await response.json()).toEqual({ received: 'MESSAGE' });
+		expect(interactions.mock.calls[0]?.[0].payload).toEqual(payload);
 	});
 
-	it('rejects a direct interaction when the signed token has another identity', async () => {
-		const handler = vi.fn();
-		const channel = createGoogleChatChannel({
-			fetch: createKeyFetcher(),
-			interactions: {
-				authentication: {
-					type: 'endpoint-url',
-					audience: ENDPOINT_AUDIENCE,
-					jwksUrl: JWKS_URL,
-				},
-				handler,
-			},
-		});
-		const token = await signOidcToken({
-			audience: ENDPOINT_AUDIENCE,
-			email: 'another-service@synthetic-project.iam.gserviceaccount.com',
-		});
+	it('passes current and future direct interaction types through when authentication succeeds', async () => {
+		const interactions = vi.fn((_input: { payload: unknown }) => undefined);
+		const channel = endpointChannel(interactions);
+		const widget = { type: 'WIDGET_UPDATED', common: { invokedFunction: 'refresh' } };
+		const future = { type: 'FUTURE_INTERACTION', future: { preserved: true } };
 
-		const response = await mount(channel).request('/interactions', {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${token}`,
-				'content-type': 'application/json',
-			},
-			body: JSON.stringify({ type: 'REMOVED_FROM_SPACE' }),
-		});
-
-		expect(response.status).toBe(401);
-		expect(handler).not.toHaveBeenCalled();
+		expect(
+			(await app(channel).request('/interactions', await interactionInit(widget))).status,
+		).toBe(200);
+		expect(
+			(await app(channel).request('/interactions', await interactionInit(future))).status,
+		).toBe(200);
+		expect(interactions.mock.calls.map(([input]) => input.payload)).toEqual([widget, future]);
 	});
 
-	it('verifies a project-number interaction against the Chat service certificate', async () => {
-		const handler = vi.fn(({ event }) => {
-			if (event.type !== 'card_clicked') return;
-			return {
-				action: event.payload.actionMethodName,
-				parameters: event.payload.parameters,
-			};
-		});
-		const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-			expect(String(input)).toBe(CERTIFICATES_URL);
-			return Response.json(
-				{ 'synthetic-x509-key': SYNTHETIC_CERTIFICATE },
-				{ headers: { 'cache-control': 'public, max-age=300' } },
-			);
-		});
+	it('passes an interaction when its project-number token is valid', async () => {
+		const interactions = vi.fn(({ payload }) => ({ type: payload.type }));
+		const fetcher = vi.fn(async () =>
+			Response.json({ 'synthetic-x509-key': SYNTHETIC_CERTIFICATE }),
+		);
 		const channel = createGoogleChatChannel({
 			fetch: fetcher,
 			interactions: {
@@ -195,7 +131,7 @@ describe('createGoogleChatChannel()', () => {
 					projectNumber: PROJECT_NUMBER,
 					certificatesUrl: CERTIFICATES_URL,
 				},
-				handler,
+				handler: interactions,
 			},
 		});
 		const token = await new SignJWT({})
@@ -206,581 +142,401 @@ describe('createGoogleChatChannel()', () => {
 			.setExpirationTime('5m')
 			.sign(x509PrivateKey);
 
-		const response = await mount(channel).request('/interactions', {
+		const response = await app(channel).request('/interactions', {
 			method: 'POST',
-			headers: {
-				authorization: `Bearer ${token}`,
-				'content-type': 'application/json',
-			},
-			body: JSON.stringify({
-				type: 'CARD_CLICKED',
-				space: { name: 'spaces/project-room', type: 'GROUP_CHAT' },
-				action: {
-					actionMethodName: 'approve_release',
-					parameters: [
-						{ key: 'release', value: 'rc-8' },
-						{ key: 'ignored', value: 9 },
-					],
-				},
-				common: { formInputs: { note: { stringInputs: { value: ['ship'] } } } },
-			}),
+			headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+			body: JSON.stringify({ type: 'CARD_CLICKED', action: { actionMethodName: 'approve' } }),
 		});
 
 		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({
-			action: 'approve_release',
-			parameters: { release: 'rc-8' },
-		});
+		expect(await response.json()).toEqual({ type: 'CARD_CLICKED' });
 		expect(fetcher).toHaveBeenCalledOnce();
 	});
 
-	it('normalizes the remaining direct interaction families when their tokens are valid', async () => {
-		const observed: string[] = [];
-		const channel = createGoogleChatChannel({
-			fetch: createKeyFetcher(),
-			interactions: {
-				authentication: {
-					type: 'endpoint-url',
-					audience: ENDPOINT_AUDIENCE,
-					jwksUrl: JWKS_URL,
-				},
-				handler({ event }) {
-					observed.push(event.type);
-					return;
-				},
-			},
-		});
-		const token = await signOidcToken({
-			audience: ENDPOINT_AUDIENCE,
-			email: CHAT_IDENTITY,
-		});
-		for (const body of [
-			{
-				type: 'ADDED_TO_SPACE',
-				space: { name: 'spaces/family-test', type: 'SPACE' },
-			},
-			{
-				type: 'REMOVED_FROM_SPACE',
-				space: { name: 'spaces/family-test', type: 'SPACE' },
-			},
-			{
-				type: 'APP_COMMAND',
-				appCommandMetadata: { appCommandId: 'command-19', appCommandType: 'SLASH_COMMAND' },
-			},
-			{
-				type: 'APP_HOME',
-				action: { actionMethodName: 'render_home' },
-			},
-			{
-				type: 'SUBMIT_FORM',
-				action: { actionMethodName: 'save_preferences' },
-				common: { formInputs: { color: { stringInputs: { value: ['blue'] } } } },
-			},
-			{ type: 'FUTURE_INTERACTION', futureField: true },
-		]) {
-			const response = await mount(channel).request('/interactions', {
-				method: 'POST',
-				headers: {
-					authorization: `Bearer ${token}`,
-					'content-type': 'application/json',
-				},
-				body: JSON.stringify(body),
-			});
-			expect(response.status).toBe(200);
-		}
-
-		expect(observed).toEqual([
-			'added_to_space',
-			'removed_from_space',
-			'app_command',
-			'app_home',
-			'submit_form',
-			'unknown',
-		]);
-	});
-
-	it('refreshes cached Google keys once when a valid token uses a rotated key id', async () => {
-		const rotatedPair = await generateKeyPair('RS256');
-		const rotatedJwk = await exportJWK(rotatedPair.publicKey);
-		let discovery = 0;
-		const fetcher = vi.fn(async () => {
-			discovery += 1;
-			const key =
-				discovery === 1
-					? { ...oidcJwk, kid: 'synthetic-google-key', alg: 'RS256', use: 'sig' }
-					: { ...rotatedJwk, kid: 'rotated-google-key', alg: 'RS256', use: 'sig' };
-			return Response.json(
-				{ keys: [key] },
-				{ headers: { 'cache-control': 'public, max-age=300' } },
-			);
-		});
-		const handler = vi.fn();
-		const channel = createGoogleChatChannel({
-			fetch: fetcher,
-			interactions: {
-				authentication: {
-					type: 'endpoint-url',
-					audience: ENDPOINT_AUDIENCE,
-					jwksUrl: JWKS_URL,
-				},
-				handler,
-			},
-		});
-		const originalToken = await signOidcToken({
-			audience: ENDPOINT_AUDIENCE,
-			email: CHAT_IDENTITY,
-		});
-		const rotatedToken = await new SignJWT({
-			email: CHAT_IDENTITY,
-			email_verified: true,
-		})
-			.setProtectedHeader({ alg: 'RS256', kid: 'rotated-google-key' })
+	it('rejects endpoint tokens with another identity or signing key', async () => {
+		const interactions = vi.fn(() => undefined);
+		const channel = endpointChannel(interactions);
+		const wrongIdentity = await signOidcToken(ENDPOINT_AUDIENCE, 'another@example.test');
+		const otherPair = await generateKeyPair('RS256');
+		const wrongKey = await new SignJWT({ email: CHAT_IDENTITY, email_verified: true })
+			.setProtectedHeader({ alg: 'RS256', kid: 'synthetic-google-key' })
 			.setIssuer('https://accounts.google.com')
 			.setAudience(ENDPOINT_AUDIENCE)
 			.setIssuedAt()
 			.setExpirationTime('5m')
-			.sign(rotatedPair.privateKey);
+			.sign(otherPair.privateKey);
 		const request = (token: string) => ({
 			method: 'POST',
-			headers: {
-				authorization: `Bearer ${token}`,
-				'content-type': 'application/json',
-			},
+			headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
 			body: JSON.stringify({ type: 'REMOVED_FROM_SPACE' }),
 		});
 
-		expect((await mount(channel).request('/interactions', request(originalToken))).status).toBe(
-			200,
-		);
-		expect((await mount(channel).request('/interactions', request(rotatedToken))).status).toBe(200);
-		expect(fetcher).toHaveBeenCalledTimes(2);
-		expect(handler).toHaveBeenCalledTimes(2);
+		expect((await app(channel).request('/interactions', request(wrongIdentity))).status).toBe(401);
+		expect((await app(channel).request('/interactions', request(wrongKey))).status).toBe(401);
+		expect(interactions).not.toHaveBeenCalled();
 	});
 
-	it('uses Hono responses and returns failure when an interaction handler throws', async () => {
-		const token = await signOidcToken({
-			audience: ENDPOINT_AUDIENCE,
-			email: CHAT_IDENTITY,
-		});
-		const responseChannel = createGoogleChatChannel({
-			fetch: createKeyFetcher(),
-			interactions: {
-				authentication: {
-					type: 'endpoint-url',
-					audience: ENDPOINT_AUDIENCE,
-					jwksUrl: JWKS_URL,
-				},
-				handler({ c }) {
-					return c.json({ accepted: false }, 422);
-				},
-			},
-		});
-		const thrownChannel = createGoogleChatChannel({
-			fetch: createKeyFetcher(),
-			interactions: {
-				authentication: {
-					type: 'endpoint-url',
-					audience: ENDPOINT_AUDIENCE,
-					jwksUrl: JWKS_URL,
-				},
-				handler() {
-					throw new Error('synthetic handler failure');
-				},
-			},
-		});
-		const request = {
+	it('rejects missing or malformed bearer authentication when the body is valid', async () => {
+		const interactions = vi.fn(() => undefined);
+		const channel = endpointChannel(interactions);
+		const body = JSON.stringify({ type: 'MESSAGE' });
+		const missing = {
 			method: 'POST',
-			headers: {
-				authorization: `Bearer ${token}`,
-				'content-type': 'application/json',
-			},
-			body: JSON.stringify({ type: 'REMOVED_FROM_SPACE' }),
+			headers: { 'content-type': 'application/json' },
+			body,
+		};
+		const malformed = {
+			method: 'POST',
+			headers: { authorization: 'Basic invalid', 'content-type': 'application/json' },
+			body,
 		};
 
-		const customResponse = await mount(responseChannel).request('/interactions', request);
-		const failureResponse = await mount(thrownChannel).request('/interactions', request);
-
-		expect(customResponse.status).toBe(422);
-		expect(await customResponse.json()).toEqual({ accepted: false });
-		expect(failureResponse.status).toBe(500);
+		expect((await app(channel).request('/interactions', missing)).status).toBe(401);
+		expect((await app(channel).request('/interactions', malformed)).status).toBe(401);
+		expect(interactions).not.toHaveBeenCalled();
 	});
 
-	it('rejects unsupported media types and oversized direct interaction bodies', async () => {
-		const handler = vi.fn();
-		const channel = createGoogleChatChannel({
-			bodyLimit: 32,
-			interactions: {
-				authentication: {
-					type: 'endpoint-url',
-					audience: ENDPOINT_AUDIENCE,
-					jwksUrl: JWKS_URL,
-				},
-				handler,
-			},
+	it('rejects endpoint tokens when audience, issuer, or expiration is invalid', async () => {
+		const interactions = vi.fn(() => undefined);
+		const channel = endpointChannel(interactions);
+		const wrongAudience = await signOidcToken('https://wrong.example.test', CHAT_IDENTITY);
+		const wrongIssuer = await signOidcToken(ENDPOINT_AUDIENCE, CHAT_IDENTITY, {
+			issuer: 'https://issuer.example.test',
 		});
+		const expired = await signOidcToken(ENDPOINT_AUDIENCE, CHAT_IDENTITY, {
+			expirationTime: Math.floor(Date.now() / 1000) - 60,
+		});
+		const request = (token: string) => requestWithToken({ type: 'REMOVED_FROM_SPACE' }, token);
 
-		const unsupported = await mount(channel).request('/interactions', {
+		expect((await app(channel).request('/interactions', request(wrongAudience))).status).toBe(401);
+		expect((await app(channel).request('/interactions', request(wrongIssuer))).status).toBe(401);
+		expect((await app(channel).request('/interactions', request(expired))).status).toBe(401);
+		expect(interactions).not.toHaveBeenCalled();
+	});
+
+	it('rejects malformed JSON and unsupported media types before invoking the callback', async () => {
+		const interactions = vi.fn(() => undefined);
+		const channel = endpointChannel(interactions);
+		const malformed = {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: '{',
+		};
+		const unsupported = {
 			method: 'POST',
 			headers: { 'content-type': 'text/plain' },
+			body: JSON.stringify({ type: 'MESSAGE' }),
+		};
+
+		expect((await app(channel).request('/interactions', malformed)).status).toBe(400);
+		expect((await app(channel).request('/interactions', unsupported)).status).toBe(415);
+		expect(interactions).not.toHaveBeenCalled();
+	});
+
+	it('passes Hono and cross-realm responses through when callbacks return them', async () => {
+		const honoChannel = endpointChannel(({ c }) => c.json({ accepted: true }, 202));
+		const foreignResponse = new Response('foreign', { status: 207 });
+		const foreignPrototype = Object.create(Object.getPrototypeOf(foreignResponse));
+		Object.defineProperty(foreignPrototype, Symbol.toStringTag, { value: 'Response' });
+		Object.setPrototypeOf(foreignResponse, foreignPrototype);
+		const foreignChannel = endpointChannel(() => foreignResponse);
+
+		const hono = await app(honoChannel).request(
+			'/interactions',
+			await interactionInit({ type: 'APP_HOME' }),
+		);
+		const foreign = await app(foreignChannel).request(
+			'/interactions',
+			await interactionInit({ type: 'APP_HOME' }),
+		);
+
+		expect(hono.status).toBe(202);
+		expect(await hono.json()).toEqual({ accepted: true });
+		expect(foreign.status).toBe(207);
+		expect(await foreign.text()).toBe('foreign');
+	});
+
+	it('lets handler errors flow through Hono when a callback throws', async () => {
+		const channel = endpointChannel(() => {
+			throw new Error('failed');
+		});
+		const hono = app(channel);
+		hono.onError((error, c) => c.json({ handled: error.message }, 503));
+
+		const response = await hono.request(
+			'/interactions',
+			await interactionInit({ type: 'APP_HOME' }),
+		);
+
+		expect(response.status).toBe(503);
+		expect(await response.json()).toEqual({ handled: 'failed' });
+	});
+
+	it('rejects declared and streamed bodies over the configured limit', async () => {
+		const interactions = vi.fn(() => undefined);
+		const channel = endpointChannel(interactions, 8);
+		const declared = new Request('https://example.test/interactions', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', 'content-length': '9' },
 			body: '{}',
 		});
-		const oversized = await mount(channel).request('/interactions', {
+		const streamed = new Request('https://example.test/interactions', {
 			method: 'POST',
-			headers: {
-				'content-type': 'application/json',
-				'content-length': '64',
-			},
-			body: JSON.stringify({ type: 'MESSAGE', text: 'larger than the configured limit' }),
-		});
+			headers: { 'content-type': 'application/json' },
+			body: new ReadableStream({
+				start(controller) {
+					controller.enqueue(encoder.encode('12345'));
+					controller.enqueue(encoder.encode('6789'));
+					controller.close();
+				},
+			}),
+			duplex: 'half',
+		} as RequestInit);
 
-		expect(unsupported.status).toBe(415);
-		expect(oversized.status).toBe(413);
-		expect(handler).not.toHaveBeenCalled();
+		expect((await app(channel).request(declared)).status).toBe(413);
+		expect((await app(channel).request(streamed)).status).toBe(413);
+		expect(interactions).not.toHaveBeenCalled();
 	});
 
-	it('normalizes an authenticated Workspace message event when Pub/Sub attributes match', async () => {
-		const handler = vi.fn(({ event }) => ({
-			type: event.type,
-			space: event.destination?.space,
-		}));
-		const fetcher = createKeyFetcher();
-		const channel = createGoogleChatChannel({
-			fetch: fetcher,
-			workspaceEvents: {
-				authentication: {
-					subscription: PUBSUB_SUBSCRIPTION,
-					audience: PUBSUB_AUDIENCE,
-					serviceAccountEmail: PUBSUB_IDENTITY,
-					jwksUrl: JWKS_URL,
-				},
-				handler,
-			},
+	it('passes the complete Pub/Sub delivery when authentication succeeds', async () => {
+		const workspaceEvents = vi.fn(({ delivery }) => ({ id: delivery.message.messageId }));
+		const channel = workspaceChannel(workspaceEvents);
+		const delivery = pubsubDelivery({
+			eventType: 'google.workspace.chat.space.v1.deleted',
+			subject: '//chat.googleapis.com/spaces/amber-ops',
+			data: { space: { name: 'spaces/amber-ops' } },
 		});
-		const token = await signOidcToken({
-			audience: PUBSUB_AUDIENCE,
-			email: PUBSUB_IDENTITY,
-		});
-		const response = await mount(channel).request('/events', {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${token}`,
-				'content-type': 'application/json',
-			},
-			body: JSON.stringify(
-				pubsubBody({
-					eventType: 'google.workspace.chat.message.v1.created',
-					subject: '//chat.googleapis.com/spaces/amber-ops',
-					data: {
-						message: {
-							name: 'spaces/amber-ops/messages/event-message-3',
-							space: { name: 'spaces/amber-ops', type: 'SPACE' },
-							thread: { name: 'spaces/amber-ops/threads/thread-9' },
-							text: 'status update from synthetic event',
-						},
-					},
-				}),
-			),
-		});
+		delivery.deliveryAttempt = 3;
+		delivery.message.orderingKey = 'space-amber-ops';
+		delivery.futureEnvelopeField = { preserved: true };
+
+		const response = await app(channel).request('/events', await eventInit(delivery));
 
 		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({
-			type: 'message_created',
-			space: 'spaces/amber-ops',
-		});
-		const event = handler.mock.calls[0]?.[0].event;
-		expect(event.pubsubMessageId).toBe('pubsub-message-100');
-		expect(event.attributes.id).toBe('workspace-event-88');
-		expect(event.destination).toEqual({
-			space: 'spaces/amber-ops',
-			thread: 'spaces/amber-ops/threads/thread-9',
-			spaceType: 'SPACE',
-		});
+		expect(await response.json()).toEqual({ id: 'pubsub-message-100' });
+		expect(workspaceEvents.mock.calls[0]?.[0].delivery).toEqual(delivery);
 	});
 
-	it('forwards an authenticated lifecycle event without inventing a Chat destination', async () => {
-		const handler = vi.fn(({ event }) => ({
-			type: event.type,
-			hasDestination: event.destination !== undefined,
-		}));
-		const channel = createGoogleChatChannel({
-			fetch: createKeyFetcher(),
-			workspaceEvents: {
-				authentication: {
-					subscription: PUBSUB_SUBSCRIPTION,
-					audience: PUBSUB_AUDIENCE,
-					serviceAccountEmail: PUBSUB_IDENTITY,
-					jwksUrl: JWKS_URL,
-				},
-				handler,
-			},
+	it('passes a future Workspace event type through when its CloudEvent is valid', async () => {
+		const workspaceEvents = vi.fn((_input: { delivery: unknown }) => undefined);
+		const channel = workspaceChannel(workspaceEvents);
+		const delivery = pubsubDelivery({
+			eventType: 'google.workspace.chat.future.v2.changed',
+			subject: '//chat.googleapis.com/spaces/future-space',
+			data: { futureResource: { preserved: true } },
 		});
-		const token = await signOidcToken({
-			audience: PUBSUB_AUDIENCE,
-			email: PUBSUB_IDENTITY,
+
+		expect((await app(channel).request('/events', await eventInit(delivery))).status).toBe(200);
+		expect(workspaceEvents.mock.calls[0]?.[0].delivery).toEqual(delivery);
+	});
+
+	it('returns authentication failure when unauthenticated Pub/Sub data is invalid', async () => {
+		const workspaceEvents = vi.fn(() => undefined);
+		const channel = workspaceChannel(workspaceEvents);
+		const invalid = pubsubDelivery({
+			eventType: 'google.workspace.chat.message.v1.created',
+			subject: '//chat.googleapis.com/spaces/auth-order',
+			data: {},
 		});
-		const subscription = '//workspaceevents.googleapis.com/subscriptions/subscription-23';
-		const response = await mount(channel).request('/events', {
+		invalid.message.data = 'not base64';
+
+		const response = await app(channel).request('/events', {
 			method: 'POST',
-			headers: {
-				authorization: `Bearer ${token}`,
-				'content-type': 'application/json',
-			},
-			body: JSON.stringify(
-				pubsubBody({
-					eventType: 'google.workspace.events.subscription.v1.suspended',
-					subject: subscription,
-					source: subscription,
-					data: { subscription: { name: 'subscriptions/subscription-23' } },
-				}),
-			),
-		});
-
-		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({
-			type: 'subscription_suspended',
-			hasDestination: false,
-		});
-	});
-
-	it('normalizes membership, reaction, space, and unknown Workspace Event families', async () => {
-		const observed: string[] = [];
-		const channel = createGoogleChatChannel({
-			fetch: createKeyFetcher(),
-			workspaceEvents: {
-				authentication: {
-					subscription: PUBSUB_SUBSCRIPTION,
-					audience: PUBSUB_AUDIENCE,
-					serviceAccountEmail: PUBSUB_IDENTITY,
-					jwksUrl: JWKS_URL,
-				},
-				handler({ event }) {
-					observed.push(event.type);
-					return;
-				},
-			},
-		});
-		const token = await signOidcToken({
-			audience: PUBSUB_AUDIENCE,
-			email: PUBSUB_IDENTITY,
-		});
-		for (const eventType of [
-			'google.workspace.chat.membership.v1.created',
-			'google.workspace.chat.reaction.v1.deleted',
-			'google.workspace.chat.space.v1.updated',
-			'google.workspace.chat.future.v1.changed',
-		]) {
-			const response = await mount(channel).request('/events', {
-				method: 'POST',
-				headers: {
-					authorization: `Bearer ${token}`,
-					'content-type': 'application/json',
-				},
-				body: JSON.stringify(
-					pubsubBody({
-						eventType,
-						subject: '//chat.googleapis.com/spaces/family-events',
-						data: { space: { name: 'spaces/family-events', type: 'SPACE' } },
-					}),
-				),
-			});
-			expect(response.status).toBe(200);
-		}
-
-		expect(observed).toEqual([
-			'membership_created',
-			'reaction_deleted',
-			'space_updated',
-			'unknown',
-		]);
-	});
-
-	it('rejects a Workspace event when the authenticated Pub/Sub identity differs', async () => {
-		const handler = vi.fn();
-		const channel = createGoogleChatChannel({
-			fetch: createKeyFetcher(),
-			workspaceEvents: {
-				authentication: {
-					subscription: PUBSUB_SUBSCRIPTION,
-					audience: PUBSUB_AUDIENCE,
-					serviceAccountEmail: PUBSUB_IDENTITY,
-					jwksUrl: JWKS_URL,
-				},
-				handler,
-			},
-		});
-		const token = await signOidcToken({
-			audience: PUBSUB_AUDIENCE,
-			email: 'unexpected-push@synthetic-project.iam.gserviceaccount.com',
-		});
-		const response = await mount(channel).request('/events', {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${token}`,
-				'content-type': 'application/json',
-			},
-			body: JSON.stringify(
-				pubsubBody({
-					eventType: 'google.workspace.chat.space.v1.updated',
-					subject: '//chat.googleapis.com/spaces/identity-test',
-					data: { space: { name: 'spaces/identity-test', type: 'SPACE' } },
-				}),
-			),
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(invalid),
 		});
 
 		expect(response.status).toBe(401);
-		expect(handler).not.toHaveBeenCalled();
+		expect(workspaceEvents).not.toHaveBeenCalled();
 	});
 
-	it('rejects a Workspace event when the Pub/Sub subscription differs', async () => {
-		const handler = vi.fn();
-		const channel = createGoogleChatChannel({
-			fetch: createKeyFetcher(),
-			workspaceEvents: {
-				authentication: {
-					subscription: PUBSUB_SUBSCRIPTION,
-					audience: PUBSUB_AUDIENCE,
-					serviceAccountEmail: PUBSUB_IDENTITY,
-					jwksUrl: JWKS_URL,
-				},
-				handler,
-			},
+	it('rejects Pub/Sub deliveries when data, CloudEvent relationships, or attempts are invalid', async () => {
+		const workspaceEvents = vi.fn(() => undefined);
+		const channel = workspaceChannel(workspaceEvents);
+		const invalidBase64 = pubsubDelivery({
+			eventType: 'google.workspace.chat.message.v1.created',
+			subject: '//chat.googleapis.com/spaces/invalid-data',
+			data: {},
 		});
-		const token = await signOidcToken({
-			audience: PUBSUB_AUDIENCE,
-			email: PUBSUB_IDENTITY,
+		invalidBase64.message.data = 'not base64';
+		const invalidSource = pubsubDelivery({
+			eventType: 'google.workspace.chat.message.v1.created',
+			subject: '//chat.googleapis.com/spaces/invalid-source',
+			data: {},
 		});
-		const body = pubsubBody({
-			eventType: 'google.workspace.chat.space.v1.updated',
-			subject: '//chat.googleapis.com/spaces/subscription-test',
-			data: { space: { name: 'spaces/subscription-test', type: 'SPACE' } },
+		invalidSource.message.attributes['ce-source'] = '//example.test/subscriptions/invalid';
+		const invalidSubject = pubsubDelivery({
+			eventType: 'google.workspace.chat.message.v1.created',
+			subject: '//chat.googleapis.com/users/not-a-space',
+			data: {},
 		});
-		body.subscription = 'projects/synthetic-project/subscriptions/another-stream';
+		const invalidLifecycle = pubsubDelivery({
+			eventType: 'google.workspace.events.subscription.v1.suspended',
+			subject: '//workspaceevents.googleapis.com/subscriptions/another',
+			data: { subscription: {} },
+		});
+		const invalidAttempt = pubsubDelivery({
+			eventType: 'google.workspace.chat.message.v1.created',
+			subject: '//chat.googleapis.com/spaces/invalid-attempt',
+			data: {},
+		});
+		invalidAttempt.deliveryAttempt = 0;
 
-		const response = await mount(channel).request('/events', {
-			method: 'POST',
-			headers: {
-				authorization: `Bearer ${token}`,
-				'content-type': 'application/json',
-			},
-			body: JSON.stringify(body),
-		});
-
-		expect(response.status).toBe(403);
-		expect(handler).not.toHaveBeenCalled();
+		for (const delivery of [
+			invalidBase64,
+			invalidSource,
+			invalidSubject,
+			invalidLifecycle,
+			invalidAttempt,
+		]) {
+			expect((await app(channel).request('/events', await eventInit(delivery))).status).toBe(400);
+		}
+		expect(workspaceEvents).not.toHaveBeenCalled();
 	});
 
-	it('publishes only configured routes when one Google Chat surface is omitted', () => {
-		const interactionChannel = createGoogleChatChannel({
-			interactions: {
-				authentication: { type: 'endpoint-url', audience: ENDPOINT_AUDIENCE },
-				handler() {},
-			},
+	it('rejects Pub/Sub deliveries with another identity or subscription', async () => {
+		const workspaceEvents = vi.fn(() => undefined);
+		const channel = workspaceChannel(workspaceEvents);
+		const delivery = pubsubDelivery({
+			eventType: 'google.workspace.chat.message.v1.created',
+			subject: '//chat.googleapis.com/spaces/identity-test',
+			data: { message: { space: { name: 'spaces/identity-test' } } },
 		});
-		const workspaceChannel = createGoogleChatChannel({
-			workspaceEvents: {
-				authentication: {
-					subscription: PUBSUB_SUBSCRIPTION,
-					audience: PUBSUB_AUDIENCE,
-					serviceAccountEmail: PUBSUB_IDENTITY,
-				},
-				handler() {},
-			},
-		});
+		const wrongIdentity = await signOidcToken(PUBSUB_AUDIENCE, 'unexpected@example.test');
+		const wrongSubscription = { ...delivery, subscription: 'projects/other/subscriptions/events' };
 
-		expect(interactionChannel.routes.map((route) => route.path)).toEqual(['/interactions']);
-		expect(workspaceChannel.routes.map((route) => route.path)).toEqual(['/events']);
+		expect(
+			(await app(channel).request('/events', requestWithToken(delivery, wrongIdentity))).status,
+		).toBe(401);
+		expect((await app(channel).request('/events', await eventInit(wrongSubscription))).status).toBe(
+			403,
+		);
+		expect(workspaceEvents).not.toHaveBeenCalled();
 	});
 
-	it('round trips canonical conversation keys when the reference is valid', () => {
-		const channel = createGoogleChatChannel({
-			interactions: {
-				authentication: { type: 'endpoint-url', audience: ENDPOINT_AUDIENCE },
-				handler() {},
-			},
-		});
+	it('publishes only configured routes when one surface is omitted', () => {
+		const interactions = endpointChannel(() => undefined);
+		const events = workspaceChannel(() => undefined);
+
+		expect(interactions.routes.map((route) => route.path)).toEqual(['/interactions']);
+		expect(events.routes.map((route) => route.path)).toEqual(['/events']);
+	});
+
+	it('round trips canonical conversation keys when space and thread match', () => {
+		const channel = endpointChannel(() => undefined);
 		const reference = {
 			space: 'spaces/canonical-space',
 			thread: 'spaces/canonical-space/threads/canonical-thread',
 		};
 		const key = channel.conversationKey(reference);
 
-		expect(key).toBe(
-			'google-chat:v1:spaces%2Fcanonical-space:spaces%2Fcanonical-space%2Fthreads%2Fcanonical-thread',
-		);
-		expect(
-			channel.conversationKey({
-				...reference,
-				spaceType: 'SPACE',
-			}),
-		).toBe(key);
 		expect(channel.parseConversationKey(key)).toEqual(reference);
+		expect(channel.conversationKey({ ...reference, spaceType: 'FUTURE_SPACE_TYPE' })).toBe(key);
 	});
 
-	it('throws structured input errors when configuration or conversation keys are invalid', () => {
-		expect(() => createGoogleChatChannel({})).toThrow(InvalidGoogleChatInputError);
-		const channel = createGoogleChatChannel({
-			interactions: {
-				authentication: { type: 'endpoint-url', audience: ENDPOINT_AUDIENCE },
-				handler() {},
-			},
-		});
-		expect(() => channel.parseConversationKey('google-chat:v1:invalid')).toThrow(
+	it('rejects conversation keys when the thread belongs to another space', () => {
+		const channel = endpointChannel(() => undefined);
+		const mismatched = {
+			space: 'spaces/one',
+			thread: 'spaces/two/threads/thread',
+		};
+		const encoded = 'google-chat:v1:spaces%2Fone:spaces%2Ftwo%2Fthreads%2Fthread';
+
+		expect(() => channel.conversationKey(mismatched)).toThrow(InvalidGoogleChatInputError);
+		expect(() => channel.parseConversationKey(encoded)).toThrow(
 			InvalidGoogleChatConversationKeyError,
 		);
 	});
 });
 
-function mount(channel: ReturnType<typeof createGoogleChatChannel>): Hono {
-	const app = new Hono();
-	for (const route of channel.routes) app.on(route.method, route.path, route.handler);
-	return app;
+function app(channel: GoogleChatChannel): Hono {
+	const hono = new Hono();
+	for (const route of channel.routes) hono.on(route.method, route.path, route.handler);
+	return hono;
 }
 
-function createKeyFetcher() {
-	return vi.fn(async (input: RequestInfo | URL) => {
-		expect(String(input)).toBe(JWKS_URL);
-		return Response.json(
-			{
-				keys: [
-					{
-						...oidcJwk,
-						kid: 'synthetic-google-key',
-						alg: 'RS256',
-						use: 'sig',
-					},
-				],
-			},
-			{ headers: { 'cache-control': 'public, max-age=300' } },
-		);
+function endpointChannel(
+	handler: Parameters<typeof createGoogleChatChannel>[0]['interactions'] extends infer T
+		? T extends { handler: infer H }
+			? H
+			: never
+		: never,
+	bodyLimit?: number,
+): GoogleChatChannel {
+	return createGoogleChatChannel({
+		fetch: keyFetcher(),
+		...(bodyLimit === undefined ? {} : { bodyLimit }),
+		interactions: {
+			authentication: { type: 'endpoint-url', audience: ENDPOINT_AUDIENCE, jwksUrl: JWKS_URL },
+			handler,
+		},
 	});
 }
 
-async function signOidcToken(options: { audience: string; email: string }): Promise<string> {
-	return new SignJWT({
-		email: options.email,
-		email_verified: true,
-	})
+function workspaceChannel(
+	handler: NonNullable<Parameters<typeof createGoogleChatChannel>[0]['workspaceEvents']>['handler'],
+): GoogleChatChannel {
+	return createGoogleChatChannel({
+		fetch: keyFetcher(),
+		workspaceEvents: {
+			authentication: {
+				subscription: PUBSUB_SUBSCRIPTION,
+				audience: PUBSUB_AUDIENCE,
+				serviceAccountEmail: PUBSUB_IDENTITY,
+				jwksUrl: JWKS_URL,
+			},
+			handler,
+		},
+	});
+}
+
+function keyFetcher() {
+	return vi.fn(async () =>
+		Response.json({
+			keys: [{ ...oidcJwk, kid: 'synthetic-google-key', alg: 'RS256', use: 'sig' }],
+		}),
+	);
+}
+
+async function interactionInit(payload: unknown): Promise<RequestInit> {
+	const token = await signOidcToken(ENDPOINT_AUDIENCE, CHAT_IDENTITY);
+	return requestWithToken(payload, token);
+}
+
+async function eventInit(delivery: unknown): Promise<RequestInit> {
+	const token = await signOidcToken(PUBSUB_AUDIENCE, PUBSUB_IDENTITY);
+	return requestWithToken(delivery, token);
+}
+
+function requestWithToken(body: unknown, token: string): RequestInit {
+	return {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+		body: JSON.stringify(body),
+	};
+}
+
+async function signOidcToken(
+	audience: string,
+	email: string,
+	overrides: { issuer?: string; expirationTime?: number } = {},
+): Promise<string> {
+	return new SignJWT({ email, email_verified: true })
 		.setProtectedHeader({ alg: 'RS256', kid: 'synthetic-google-key' })
-		.setIssuer('https://accounts.google.com')
-		.setAudience(options.audience)
+		.setIssuer(overrides.issuer ?? 'https://accounts.google.com')
+		.setAudience(audience)
 		.setIssuedAt()
-		.setExpirationTime('5m')
+		.setExpirationTime(overrides.expirationTime ?? '5m')
 		.sign(oidcPrivateKey);
 }
 
-function pubsubBody(options: {
-	eventType: string;
-	subject: string;
-	data: unknown;
-	source?: string;
-}) {
+function pubsubDelivery(options: { eventType: string; subject: string; data: unknown }) {
 	return {
 		message: {
 			attributes: {
 				'ce-datacontenttype': 'application/json',
 				'ce-id': 'workspace-event-88',
-				'ce-source':
-					options.source ?? '//workspaceevents.googleapis.com/subscriptions/subscription-23',
+				'ce-source': '//workspaceevents.googleapis.com/subscriptions/subscription-23',
 				'ce-specversion': '1.0',
 				'ce-subject': options.subject,
 				'ce-time': '2026-06-13T18:07:00Z',
@@ -791,5 +547,5 @@ function pubsubBody(options: {
 			publishTime: '2026-06-13T18:07:01Z',
 		},
 		subscription: PUBSUB_SUBSCRIPTION,
-	};
+	} as Record<string, any>;
 }

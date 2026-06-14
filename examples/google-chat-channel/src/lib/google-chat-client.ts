@@ -38,6 +38,12 @@ export function createGoogleChatClient(options: GoogleChatClientOptions): Google
 			if (!/^spaces\/[^/]+$/.test(ref.space)) {
 				throw new Error('Google Chat space is invalid.');
 			}
+			if (ref.thread !== undefined) {
+				const match = /^(spaces\/[^/]+)\/threads\/[^/]+$/.exec(ref.thread);
+				if (!match || match[1] !== ref.space) {
+					throw new Error('Google Chat thread must belong to its space.');
+				}
+			}
 			if (typeof text !== 'string' || text.length === 0) {
 				throw new Error('Google Chat message text is required.');
 			}
@@ -48,9 +54,6 @@ export function createGoogleChatClient(options: GoogleChatClientOptions): Google
 			);
 			const body: { text: string; thread?: { name: string } } = { text };
 			if (ref.thread !== undefined) {
-				if (!/^spaces\/[^/]+\/threads\/[^/]+$/.test(ref.thread)) {
-					throw new Error('Google Chat thread is invalid.');
-				}
 				endpoint.searchParams.set('messageReplyOption', 'REPLY_MESSAGE_OR_FAIL');
 				body.thread = { name: ref.thread };
 			}

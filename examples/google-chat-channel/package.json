@@ -5,7 +5,9 @@
 	"scripts": {
 		"build": "flue build --target node",
 		"check:types": "tsc --noEmit",
-		"test": "vitest run --config vitest.workerd.config.ts"
+		"test": "pnpm run test:node && pnpm run test:workerd",
+		"test:node": "vitest run test/client.test.ts test/conversation.test.ts",
+		"test:workerd": "vitest run --config vitest.workerd.config.ts"
 	},
 	"dependencies": {
 		"@flue/google-chat": "workspace:*",
