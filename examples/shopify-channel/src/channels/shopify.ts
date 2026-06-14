@@ -21,29 +21,34 @@ export const channel = createShopifyChannel({
 	previousClientSecret: optionalEnv('SHOPIFY_PREVIOUS_CLIENT_SECRET'),
 
 	// Path: /channels/shopify/webhook
-	async webhook({ c, event }) {
-		if (event.shopDomain !== shopDomain) {
+	async webhook({ c, payload }) {
+		// Shopify's HMAC authenticates the body, not these headers, which are
+		// read from the verified request through `c`. This comparison is a
+		// tenancy consistency check, not authorization by itself.
+		const deliveredShopDomain = c.req.header('x-shopify-shop-domain');
+		if (deliveredShopDomain !== shopDomain) {
 			return c.json({ error: 'Unexpected Shopify shop domain.' }, 403);
 		}
 
-		switch (event.topic) {
+		switch (c.req.header('x-shopify-topic')) {
 			case 'orders/create': {
-				const order = parseOrderCreatedPayload(event.payload);
+				const order = parseOrderCreatedPayload(payload);
 				if (!order) {
 					return c.json({ error: 'Unsupported orders/create payload.' }, 400);
 				}
 
-				const ref = {
-					shopDomain: event.shopDomain,
+				const ref: ShopifyOrderRef = {
+					shopDomain: deliveredShopDomain,
 					orderId: order.id,
 				};
+				const eventId = c.req.header('x-shopify-event-id');
 				await dispatch(assistant, {
 					id: shopifyOrderInstanceId(ref),
 					input: {
 						type: 'shopify.orders/create',
-						webhookId: event.webhookId,
-						...(event.eventId === undefined ? {} : { eventId: event.eventId }),
-						shopDomain: event.shopDomain,
+						webhookId: c.req.header('x-shopify-webhook-id'),
+						...(eventId === undefined ? {} : { eventId }),
+						shopDomain: deliveredShopDomain,
 						orderId: order.id,
 						orderName: order.name,
 					},
@@ -79,7 +84,7 @@ export function shopifyOrderInstanceId(ref: ShopifyOrderRef): string {
 	if (!isShopDomain(ref.shopDomain) || !isOrderId(ref.orderId)) {
 		throw new TypeError('Shopify order reference is invalid.');
 	}
-	return `${ORDER_INSTANCE_PREFIX}${encodeURIComponent(JSON.stringify(ref))}`;
+	return `${ORDER_INSTANCE_PREFIX}${encodeURIComponent(ref.shopDomain)}:${encodeURIComponent(ref.orderId)}`;
 }
 
 export function parseShopifyOrderInstanceId(id: string): ShopifyOrderRef {
@@ -87,20 +92,25 @@ export function parseShopifyOrderInstanceId(id: string): ShopifyOrderRef {
 		throw new TypeError('Expected a local Shopify order instance id.');
 	}
 
-	let value: unknown;
+	const encoded = id.slice(ORDER_INSTANCE_PREFIX.length);
+	const separator = encoded.indexOf(':');
+	if (separator < 1) {
+		throw new TypeError('Expected a local Shopify order instance id.');
+	}
+
+	let shopDomain: string;
+	let orderId: string;
 	try {
-		value = JSON.parse(decodeURIComponent(id.slice(ORDER_INSTANCE_PREFIX.length)));
+		shopDomain = decodeURIComponent(encoded.slice(0, separator));
+		orderId = decodeURIComponent(encoded.slice(separator + 1));
 	} catch {
 		throw new TypeError('Expected a local Shopify order instance id.');
 	}
 
-	if (!isRecord(value) || !isShopDomain(value.shopDomain) || !isOrderId(value.orderId)) {
+	if (!isShopDomain(shopDomain) || !isOrderId(orderId)) {
 		throw new TypeError('Expected a local Shopify order instance id.');
 	}
-	return {
-		shopDomain: value.shopDomain,
-		orderId: String(value.orderId),
-	};
+	return { shopDomain, orderId };
 }
 
 function parseOrderCreatedPayload(payload: JsonValue): { id: string; name: string } | undefined {

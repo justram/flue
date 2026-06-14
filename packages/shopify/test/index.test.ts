@@ -25,7 +25,6 @@ describe('createShopifyChannel()', () => {
 			webhookId: '3f884e50-7f2f-48b1-a85b-1f5f1d499173',
 			eventId: '9f66d8cb-82e2-4fd7-b70d-369ec19ddc2e',
 			triggeredAt: '2026-06-13T23:45:10.123456Z',
-			name: 'new-orders',
 			subTopic: 'online-store',
 		});
 
@@ -35,25 +34,28 @@ describe('createShopifyChannel()', () => {
 		expect(response.status).toBe(200);
 		expect(tampered.status).toBe(401);
 		expect(webhook).toHaveBeenCalledOnce();
-		expect(webhook.mock.calls[0]?.[0]).toMatchObject({
+		const input = webhook.mock.calls[0]?.[0] as ShopifyWebhookHandlerInput;
+		expect(input).toMatchObject({
 			c: expect.any(Object),
-			event: {
-				topic: 'orders/create',
-				shopDomain: 'flue-fixtures.myshopify.com',
-				apiVersion: '2026-04',
-				webhookId: '3f884e50-7f2f-48b1-a85b-1f5f1d499173',
-				eventId: '9f66d8cb-82e2-4fd7-b70d-369ec19ddc2e',
-				triggeredAt: '2026-06-13T23:45:10.123456Z',
-				name: 'new-orders',
-				subTopic: 'online-store',
-				payload: {
-					id: 940721724,
-					name: '#1001',
-					customer: { id: '115310627314723954' },
-				},
-				rawBody: body,
+			payload: {
+				id: 940721724,
+				name: '#1001',
+				customer: { id: '115310627314723954' },
 			},
+			rawBody: body,
 		});
+		// Delivery metadata is read from the provider's native headers through `c`.
+		expect(input.c.req.header('x-shopify-topic')).toBe('orders/create');
+		expect(input.c.req.header('x-shopify-shop-domain')).toBe('flue-fixtures.myshopify.com');
+		expect(input.c.req.header('x-shopify-api-version')).toBe('2026-04');
+		expect(input.c.req.header('x-shopify-webhook-id')).toBe(
+			'3f884e50-7f2f-48b1-a85b-1f5f1d499173',
+		);
+		expect(input.c.req.header('x-shopify-event-id')).toBe(
+			'9f66d8cb-82e2-4fd7-b70d-369ec19ddc2e',
+		);
+		expect(input.c.req.header('x-shopify-triggered-at')).toBe('2026-06-13T23:45:10.123456Z');
+		expect(input.c.req.header('x-shopify-sub-topic')).toBe('online-store');
 	});
 
 	it('accepts the previous client secret during a rotation overlap', async () => {
@@ -129,11 +131,10 @@ describe('createShopifyChannel()', () => {
 			expect(response.status).toBe(200);
 		}
 
-		expect(webhook.mock.calls.map(([input]) => input.event.topic)).toEqual([
-			'customers/data_request',
-			'inventory_forecasts/recalculated',
-		]);
-		expect(webhook.mock.calls[1]?.[0].event.payload).toEqual({
+		expect(
+			webhook.mock.calls.map(([input]) => input.c.req.header('x-shopify-topic')),
+		).toEqual(['customers/data_request', 'inventory_forecasts/recalculated']);
+		expect(webhook.mock.calls[1]?.[0].payload).toEqual({
 			forecast: [1, 2, 3],
 			source: null,
 		});
@@ -173,7 +174,7 @@ describe('createShopifyChannel()', () => {
 		expect(webhook).not.toHaveBeenCalled();
 	});
 
-	it('rejects missing or malformed required and optional delivery metadata', async () => {
+	it('delivers verified bodies without curating or requiring delivery metadata headers', async () => {
 		const webhook = vi.fn();
 		const app = channelApp(
 			createShopifyChannel({
@@ -187,17 +188,23 @@ describe('createShopifyChannel()', () => {
 			webhookId: 'metadata-delivery',
 		});
 
+		// The channel verifies the body signature only; it does not require or
+		// validate the delivery metadata headers. Applications read whatever
+		// headers they need from `c` and validate them there.
 		const responses = await Promise.all([
 			app.request(jsonRequest(body, without(valid, 'x-shopify-topic'))),
 			app.request(jsonRequest(body, without(valid, 'x-shopify-shop-domain'))),
 			app.request(jsonRequest(body, without(valid, 'x-shopify-api-version'))),
 			app.request(jsonRequest(body, without(valid, 'x-shopify-webhook-id'))),
 			app.request(jsonRequest(body, { ...valid, 'x-shopify-event-id': '' })),
-			app.request(jsonRequest(body, { ...valid, 'x-shopify-name': '' })),
+			app.request(jsonRequest(body, { ...valid, 'x-shopify-sub-topic': '' })),
 		]);
 
-		expect(responses.map((response) => response.status)).toEqual([400, 400, 400, 400, 400, 400]);
-		expect(webhook).not.toHaveBeenCalled();
+		expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200, 200, 200]);
+		expect(webhook).toHaveBeenCalledTimes(6);
+		// A delivery with the topic header removed still reaches the handler;
+		// the application sees `undefined` for that header.
+		expect(webhook.mock.calls[0]?.[0].c.req.header('x-shopify-topic')).toBeUndefined();
 	});
 
 	it('rejects unsupported media, malformed JSON, invalid UTF-8, and oversized bodies', async () => {
@@ -280,17 +287,16 @@ describe('createShopifyChannel()', () => {
 		expect(webhook).not.toHaveBeenCalled();
 	});
 
-	it('serializes normal handler results and fails closed on invalid results or errors', async () => {
+	it('uses an empty 200 when no result is returned, serializes JSON, and passes Responses through', async () => {
 		const body = JSON.stringify({ id: 303 });
-		const outcomes: Array<undefined | object | Response | bigint | Error> = [
+		const outcomes: Array<undefined | object | number | Response> = [
 			undefined,
 			{ accepted: true },
 			new Response('accepted later', {
 				status: 202,
 				headers: { 'x-result': 'response' },
 			}),
-			1n,
-			new Error('handler failed'),
+			Number.NaN,
 		];
 		const responses: Response[] = [];
 
@@ -299,7 +305,6 @@ describe('createShopifyChannel()', () => {
 				createShopifyChannel({
 					clientSecret: CLIENT_SECRET,
 					webhook() {
-						if (outcome instanceof Error) throw outcome;
 						return outcome as never;
 					},
 				}),
@@ -317,52 +322,46 @@ describe('createShopifyChannel()', () => {
 			);
 		}
 
-		expect(responses.map((response) => response.status)).toEqual([200, 200, 202, 500, 500]);
+		expect(responses.map((response) => response.status)).toEqual([200, 200, 202, 200]);
+		await expect(responses[0]?.text()).resolves.toBe('');
 		await expect(responses[1]?.json()).resolves.toEqual({ accepted: true });
 		await expect(responses[2]?.text()).resolves.toBe('accepted later');
 		expect(responses[2]?.headers.get('x-result')).toBe('response');
+		// A non-finite number is no longer rejected closed: Response.json mirrors
+		// JSON.stringify and serializes NaN to null, acknowledging with 200.
+		await expect(responses[3]?.json()).resolves.toBeNull();
 	});
 
-	it('returns a retryable failure when the handler exceeds the configured deadline', async () => {
+	it('lets the Hono error handler handle webhook callback failures', async () => {
+		const failure = new Error('handler failed');
 		const app = channelApp(
 			createShopifyChannel({
 				clientSecret: CLIENT_SECRET,
-				handlerTimeoutMs: 5,
-				webhook: () => new Promise(() => {}),
+				webhook() {
+					throw failure;
+				},
 			}),
 		);
+		let received: Error | undefined;
+		app.onError((error, c) => {
+			received = error;
+			return c.text('handled', 503);
+		});
 		const body = JSON.stringify({ id: 404 });
 
 		const response = await app.request(
 			jsonRequest(
 				body,
 				await shopifyHeaders(body, {
-					topic: 'orders/cancelled',
-					webhookId: 'timeout-delivery',
+					topic: 'orders/updated',
+					webhookId: 'handler-error',
 				}),
 			),
 		);
 
-		expect(response.status).toBe(500);
-	});
-
-	it('applies the configured deadline to body receipt and callback time together', async () => {
-		const app = channelApp(
-			createShopifyChannel({
-				clientSecret: CLIENT_SECRET,
-				handlerTimeoutMs: 60,
-				webhook: () => new Promise((resolve) => setTimeout(resolve, 40)),
-			}),
-		);
-		const body = JSON.stringify({ id: 505 });
-		const headers = await shopifyHeaders(body, {
-			topic: 'orders/fulfilled',
-			webhookId: 'cumulative-timeout-delivery',
-		});
-
-		const response = await app.request(delayedStreamingRequest(body, headers, 40));
-
-		expect(response.status).toBe(500);
+		expect(response.status).toBe(503);
+		await expect(response.text()).resolves.toBe('handled');
+		expect(received).toBe(failure);
 	});
 
 	it('validates constructor options and publishes only the fixed webhook route', () => {
@@ -393,13 +392,6 @@ describe('createShopifyChannel()', () => {
 			createShopifyChannel({
 				clientSecret: CLIENT_SECRET,
 				bodyLimit: 0,
-				webhook() {},
-			}),
-		).toThrow(TypeError);
-		expect(() =>
-			createShopifyChannel({
-				clientSecret: CLIENT_SECRET,
-				handlerTimeoutMs: 4_501,
 				webhook() {},
 			}),
 		).toThrow(TypeError);
@@ -443,28 +435,6 @@ function streamingRequest(body: string, headers: Record<string, string>): Reques
 	} as RequestInit);
 }
 
-function delayedStreamingRequest(
-	body: string,
-	headers: Record<string, string>,
-	delayMs: number,
-): Request {
-	const bytes = encoder.encode(body);
-	const stream = new ReadableStream<Uint8Array>({
-		start(controller) {
-			setTimeout(() => {
-				controller.enqueue(bytes);
-				controller.close();
-			}, delayMs);
-		},
-	});
-	return new Request('https://example.test/webhook', {
-		method: 'POST',
-		headers: { 'content-type': 'application/json', ...headers },
-		body: stream,
-		duplex: 'half',
-	} as RequestInit);
-}
-
 async function shopifyHeaders(
 	body: string | Uint8Array,
 	options: {
@@ -473,7 +443,6 @@ async function shopifyHeaders(
 		secret?: string;
 		eventId?: string;
 		triggeredAt?: string;
-		name?: string;
 		subTopic?: string;
 	},
 ): Promise<Record<string, string>> {
@@ -485,7 +454,6 @@ async function shopifyHeaders(
 		'x-shopify-webhook-id': options.webhookId,
 		...(options.eventId ? { 'x-shopify-event-id': options.eventId } : {}),
 		...(options.triggeredAt ? { 'x-shopify-triggered-at': options.triggeredAt } : {}),
-		...(options.name ? { 'x-shopify-name': options.name } : {}),
 		...(options.subTopic ? { 'x-shopify-sub-topic': options.subTopic } : {}),
 	};
 }

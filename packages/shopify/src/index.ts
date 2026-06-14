@@ -26,53 +26,31 @@ export interface ShopifyChannelOptions<E extends Env = Env> {
 	previousClientSecret?: string;
 	/** Maximum request-body size in bytes. Defaults to 1 MiB. */
 	bodyLimit?: number;
-	/**
-	 * Complete route deadline, including body receipt, verification, parsing,
-	 * and the application callback. Defaults to and may not exceed 4500ms,
-	 * leaving time before Shopify's five-second delivery deadline.
-	 *
-	 * Timed-out work may continue running after the failure response.
-	 */
-	handlerTimeoutMs?: number;
 	/** Receives every verified JSON Shopify webhook delivery. */
 	webhook(input: ShopifyWebhookHandlerInput<E>): ShopifyHandlerResult;
 }
 
 /**
- * One verified Shopify JSON webhook.
+ * Input delivered to the webhook callback.
  *
- * Payload fields depend on the topic, API version, and subscription field
- * selection, so applications validate the fields they consume.
+ * `payload` is Shopify's parsed JSON body with its original field names and
+ * nesting. Its shape depends on the topic, API version, and subscription field
+ * selection, so applications validate the fields they consume. Unsafe numeric
+ * literals are preserved as strings so 64-bit Shopify identifiers are not
+ * rounded by JavaScript.
+ *
+ * Delivery metadata is read from the provider's native headers through `c`,
+ * for example `c.req.header('x-shopify-topic')` and
+ * `c.req.header('x-shopify-shop-domain')`. The HMAC signs the body only, not
+ * these headers, so they are routing context rather than an independent
+ * cryptographic or authorization claim.
  */
-export interface ShopifyWebhookEvent<TPayload extends JsonValue = JsonValue> {
-	/** Provider topic such as `orders/create` or `shop/redact`. */
-	topic: string;
-	/** Shop tenant supplied in `X-Shopify-Shop-Domain`. */
-	shopDomain: string;
-	/** Serializer version supplied in `X-Shopify-API-Version`. */
-	apiVersion: string;
-	/** Delivery id suitable for application-owned deduplication. */
-	webhookId: string;
-	/** Optional causal id shared by deliveries produced by the same action. */
-	eventId?: string;
-	/** Optional provider timestamp. Shopify does not include it in the HMAC. */
-	triggeredAt?: string;
-	/** Optional configured subscription name. */
-	name?: string;
-	/** Optional provider sub-topic metadata. */
-	subTopic?: string;
-	/**
-	 * Parsed provider JSON. Unsafe numeric literals are strings so 64-bit
-	 * Shopify identifiers are not rounded by JavaScript.
-	 */
-	payload: TPayload;
-	/** Exact UTF-8 body after successful signature verification. */
-	rawBody: string;
-}
-
 export interface ShopifyWebhookHandlerInput<E extends Env = Env> {
 	c: Context<E>;
-	event: ShopifyWebhookEvent;
+	/** Parsed provider JSON body. */
+	payload: JsonValue;
+	/** Exact UTF-8 body the signature was verified against. */
+	rawBody: string;
 }
 
 type ShopifyHandlerValue = undefined | JsonValue | Response;
@@ -92,7 +70,9 @@ export interface ShopifyChannel<E extends Env = Env> {
  * Creates one verified Shopify JSON webhook route.
  *
  * The route is fixed at `POST /webhook`. The channel is stateless and does not
- * deduplicate or reorder deliveries.
+ * deduplicate or reorder deliveries. Shopify allows five seconds for the whole
+ * request and does not sign a timestamp, so admit durable work promptly and
+ * rely on application-owned idempotency keyed on `x-shopify-webhook-id`.
  */
 export function createShopifyChannel<E extends Env = Env>(
 	options: ShopifyChannelOptions<E>,

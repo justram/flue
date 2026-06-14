@@ -16,7 +16,6 @@ export {
   type ShopifyChannel,
   type ShopifyChannelOptions,
   type ShopifyHandlerResult,
-  type ShopifyWebhookEvent,
   type ShopifyWebhookHandlerInput,
 };
 ```
@@ -38,7 +37,6 @@ interface ShopifyChannelOptions<E extends Env = Env> {
   clientSecret: string;
   previousClientSecret?: string;
   bodyLimit?: number;
-  handlerTimeoutMs?: number;
   webhook(input: ShopifyWebhookHandlerInput<E>): ShopifyHandlerResult;
 }
 ```
@@ -48,57 +46,36 @@ interface ShopifyChannelOptions<E extends Env = Env> {
 | `clientSecret`         | Current Shopify app client secret used for webhook HMACs.          |
 | `previousClientSecret` | Optional previous secret accepted during rotation overlap.         |
 | `bodyLimit`            | Maximum request-body size in bytes. Defaults to 1 MiB.             |
-| `handlerTimeoutMs`     | Complete route deadline. Defaults to 4500 ms; maximum 4500 ms.     |
 | `webhook`              | Receives every verified, structurally valid JSON webhook delivery. |
 
 Configured secrets must be non-empty. `bodyLimit` must be a positive integer.
-`handlerTimeoutMs` must be a positive integer no greater than 4500.
 
 ## Handler input
 
 ```ts
 interface ShopifyWebhookHandlerInput<E extends Env = Env> {
   c: Context<E>;
-  event: ShopifyWebhookEvent;
-}
-```
-
-`c` is the authentic Hono context. The callback runs only after exact-body
-HMAC verification, required-header validation, UTF-8 decoding, and JSON
-parsing.
-
-## `ShopifyWebhookEvent`
-
-```ts
-interface ShopifyWebhookEvent<TPayload extends JsonValue = JsonValue> {
-  topic: string;
-  shopDomain: string;
-  apiVersion: string;
-  webhookId: string;
-  eventId?: string;
-  triggeredAt?: string;
-  name?: string;
-  subTopic?: string;
-  payload: TPayload;
+  payload: JsonValue;
   rawBody: string;
 }
 ```
 
-| Field         | Source                         | Meaning                                             |
-| ------------- | ------------------------------ | --------------------------------------------------- |
-| `topic`       | `X-Shopify-Topic`              | Provider topic such as `orders/create`.             |
-| `shopDomain`  | `X-Shopify-Shop-Domain`        | Shop associated with the delivery.                  |
-| `apiVersion`  | `X-Shopify-API-Version`        | Version used to serialize the payload.              |
-| `webhookId`   | `X-Shopify-Webhook-Id`         | Delivery identity for application-owned dedupe.     |
-| `eventId`     | `X-Shopify-Event-Id`           | Optional identity shared by causally related sends. |
-| `triggeredAt` | `X-Shopify-Triggered-At`       | Optional provider timestamp metadata.               |
-| `name`        | `X-Shopify-Name`               | Optional subscription name.                         |
-| `subTopic`    | `X-Shopify-Sub-Topic`          | Optional opaque sub-topic metadata.                 |
-| `payload`     | Losslessly parsed request body | Provider JSON with no universal topic schema.       |
-| `rawBody`     | Exact decoded request body     | Original JSON text used for verification.           |
+`c` is the authentic Hono context. `payload` is Shopify's parsed JSON body with
+its original field names and nesting. `rawBody` is the exact UTF-8 body the
+signature was verified against. The callback runs only after exact-body HMAC
+verification, UTF-8 decoding, and JSON parsing.
 
-Topics remain open strings. A verified topic newer than the installed package
-still reaches `webhook`.
+Delivery metadata is read from the provider's native headers through `c`, for
+example `c.req.header('x-shopify-topic')`, `c.req.header('x-shopify-shop-domain')`,
+`c.req.header('x-shopify-api-version')`, and `c.req.header('x-shopify-webhook-id')`.
+Optional `c.req.header('x-shopify-event-id')`, `c.req.header('x-shopify-triggered-at')`,
+and `c.req.header('x-shopify-sub-topic')` may be absent. The channel does not
+curate a typed header object, require any header's presence, or read the
+non-standard `X-Shopify-Name` header; the application reads and validates
+whatever headers it consumes from `c`.
+
+Topics remain open strings read from `c.req.header('x-shopify-topic')`. A
+verified topic newer than the installed package still reaches `webhook`.
 
 Payload fields depend on topic, API version, and subscription field selection.
 The package parses JSON with `lossless-json`: safe numeric literals remain
@@ -126,14 +103,15 @@ type ShopifyHandlerResult =
 ```
 
 Returning nothing produces an empty `200`. A JSON-compatible value becomes a
-JSON response. A normal Hono or Fetch `Response` passes through unchanged.
-Thrown callbacks, unsupported return values, and route timeouts produce an
-empty `500`.
+JSON response. A normal Hono or Fetch `Response` passes through unchanged. A
+thrown callback propagates to Hono's error handler.
 
 Non-2xx responses request Shopify redelivery. Shopify's total response deadline
-is five seconds, so `handlerTimeoutMs` covers body receipt, verification,
-parsing, and the callback and is capped at 4500. Timed-out work is not
-cancelled and can continue executing.
+is five seconds. The channel does not enforce a deadline with a timer, because
+racing a JavaScript callback against a timer does not cancel it: the timed-out
+work keeps running and may complete after the failure response. Admit durable
+work promptly — dispatch and return — and rely on application-owned idempotency
+keyed on `x-shopify-webhook-id` rather than a timeout to keep retries safe.
 
 ## `ShopifyChannel`
 
@@ -155,22 +133,20 @@ the `flue()` mount.
 
 ## Verification
 
-The route accepts `application/json` and requires non-empty:
-
-- `X-Shopify-Hmac-Sha256`;
-- `X-Shopify-Topic`;
-- `X-Shopify-Shop-Domain`;
-- `X-Shopify-API-Version`;
-- `X-Shopify-Webhook-Id`.
+The route accepts `application/json` and authenticates each delivery with the
+`X-Shopify-Hmac-Sha256` header.
 
 The channel retains the exact request bytes and verifies base64 HMAC-SHA256
 with `clientSecret`. If that fails and `previousClientSecret` is configured,
 it tries the previous secret. Verification runs before JSON parsing or
-application code.
+application code. The channel verifies the body signature only; it does not
+require, curate, or validate the delivery metadata headers. A delivery missing
+a metadata header still reaches `webhook`, where the application reads and
+validates whatever headers it consumes from `c`.
 
-Unsupported media types receive `415`; oversized bodies receive `413`;
-missing, malformed, or invalid authentication receives `401`; malformed JSON
-or required delivery metadata receives `400`.
+Unsupported media types receive `415`; oversized bodies receive `413`; missing,
+malformed, or incorrect authentication receives `401`; malformed JSON or invalid
+UTF-8 receives `400`.
 
 Shopify supplies no signed webhook timestamp or protocol replay window.
 Applications own replay policy, delivery-id persistence, deduplication, and
@@ -179,8 +155,9 @@ ordering.
 ## Delivery and application boundary
 
 Shopify can duplicate or reorder deliveries and retries failures eight times
-over four hours. Use `webhookId` for delivery deduplication. Use `eventId`, when
-present, only to correlate deliveries caused by the same merchant action.
+over four hours. Use `c.req.header('x-shopify-webhook-id')` for delivery
+deduplication. Use `c.req.header('x-shopify-event-id')`, when present, only to
+correlate deliveries caused by the same merchant action.
 
 The channel supports JSON HTTPS webhooks, including mandatory
 `customers/data_request`, `customers/redact`, and `shop/redact` topics. It does

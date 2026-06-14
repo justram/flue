@@ -25,9 +25,8 @@ describe('@flue/shopify workerd ingress', () => {
 
 		expect(response.status).toBe(200);
 		expect(tampered.status).toBe(401);
-		expect(webhook.mock.calls[0]?.[0].event).toMatchObject({
-			topic: 'orders/create',
-			webhookId: 'worker-current',
+		const input = webhook.mock.calls[0]?.[0];
+		expect(input).toMatchObject({
 			payload: {
 				id: 814309,
 				customer_id: '9007199254741999',
@@ -35,6 +34,8 @@ describe('@flue/shopify workerd ingress', () => {
 			},
 			rawBody: body,
 		});
+		expect(input.c.req.header('x-shopify-topic')).toBe('orders/create');
+		expect(input.c.req.header('x-shopify-webhook-id')).toBe('worker-current');
 		expect(globalThis.process).toBeDefined();
 		expect(globalThis.Buffer).toBeDefined();
 		expect(crypto.subtle).toBeDefined();
@@ -59,10 +60,11 @@ describe('@flue/shopify workerd ingress', () => {
 		);
 
 		expect(response.status).toBe(200);
-		expect(webhook.mock.calls[0]?.[0].event).toMatchObject({
-			topic: 'future_resources/created',
+		const input = webhook.mock.calls[0]?.[0];
+		expect(input).toMatchObject({
 			payload: { future_resource: { id: 'gid://shopify/Future/17' } },
 		});
+		expect(input.c.req.header('x-shopify-topic')).toBe('future_resources/created');
 	});
 
 	it('enforces streamed body limits in workerd', async () => {

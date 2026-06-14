@@ -56,32 +56,35 @@ export const client = createShopifyClient();
 export const channel = createShopifyChannel({
   clientSecret: process.env.SHOPIFY_CLIENT_SECRET!,
   previousClientSecret: process.env.SHOPIFY_PREVIOUS_CLIENT_SECRET || undefined,
-  handlerTimeoutMs: 4500,
 
   // Path: /channels/shopify/webhook
-  async webhook({ c, event }) {
-    if (event.shopDomain !== SHOP_DOMAIN) {
+  async webhook({ c, payload }) {
+    // Shopify's HMAC authenticates the body, not these headers, which are
+    // read from the verified request through `c`. This comparison is a
+    // tenancy consistency check, not authorization by itself.
+    const shopDomain = c.req.header('x-shopify-shop-domain');
+    if (shopDomain !== SHOP_DOMAIN) {
       return c.json({ error: 'Unexpected Shopify shop.' }, 403);
     }
 
-    switch (event.topic) {
+    switch (c.req.header('x-shopify-topic')) {
       case 'orders/create': {
-        const order = parseOrderCreatedPayload(event.payload);
+        const order = parseOrderCreatedPayload(payload);
         if (!order) {
           return c.json({ error: 'Unsupported orders/create payload.' }, 400);
         }
 
         await dispatch(orders, {
-          id: orderInstanceId(event.shopDomain, order.id),
+          id: orderInstanceId(shopDomain, order.id),
           input: {
             type: 'shopify.orders.create',
-            deliveryId: event.webhookId,
-            eventId: event.eventId,
-            shopDomain: event.shopDomain,
-            apiVersion: event.apiVersion,
+            deliveryId: c.req.header('x-shopify-webhook-id'),
+            eventId: c.req.header('x-shopify-event-id'),
+            shopDomain,
+            apiVersion: c.req.header('x-shopify-api-version'),
             orderId: order.id,
             orderName: order.name,
-            triggeredAt: event.triggeredAt,
+            triggeredAt: c.req.header('x-shopify-triggered-at'),
           },
         });
         return;
@@ -237,12 +240,19 @@ Shopify computes base64 HMAC-SHA256 over the exact request body.
 `@flue/shopify` verifies those bytes before decoding or parsing JSON. The
 first-party channel supports JSON subscriptions only; XML receives `415`.
 
-The callback receives `{ c, event }`. Each event has:
+The callback receives `{ c, payload, rawBody }`: the Hono context, the parsed
+JSON `payload`, and the exact verified `rawBody`. Delivery metadata is read from
+the provider's native headers through `c`:
 
-- `topic`, `shopDomain`, `apiVersion`, and `webhookId`;
-- optional `eventId`, `triggeredAt`, `name`, and `subTopic`;
-- the parsed JSON `payload`;
-- the exact `rawBody`.
+- `c.req.header('x-shopify-topic')`, `'x-shopify-shop-domain'`,
+  `'x-shopify-api-version'`, and `'x-shopify-webhook-id'`;
+- optional `'x-shopify-event-id'`, `'x-shopify-triggered-at'`, and
+  `'x-shopify-sub-topic'`.
+
+The channel verifies the body signature only; it does not curate a typed header
+object, require any header's presence, or read the non-standard `X-Shopify-Name`
+header. A delivery missing a metadata header still reaches the callback, where
+the application reads and validates the headers it consumes from `c`.
 
 Topics remain provider-native strings such as `orders/create`. Future verified
 topics reach the callback instead of being rejected because the installed
@@ -265,7 +275,7 @@ Use `previousClientSecret` during an app-secret rotation overlap:
 createShopifyChannel({
   clientSecret: process.env.SHOPIFY_CLIENT_SECRET!,
   previousClientSecret: process.env.SHOPIFY_PREVIOUS_CLIENT_SECRET || undefined,
-  webhook({ event }) {
+  webhook({ c, payload }) {
     // ...
   },
 });
@@ -279,18 +289,21 @@ Returning nothing produces an empty `200`. A JSON-compatible value becomes a
 JSON response. A normal Hono or Fetch `Response` passes through unchanged.
 Non-2xx responses ask Shopify to retry.
 
-Shopify allows five seconds for the complete delivery. `handlerTimeoutMs`
-defaults to 4500 and cannot exceed 4500. It covers body receipt, verification,
-parsing, and the callback, leaving time for Flue to write the response. Route
-failure or timeout returns `500`. Promise timeouts cannot cancel arbitrary
-JavaScript work, so schedule long-running processing outside the webhook
-response path.
+Shopify allows five seconds for the complete delivery. The channel does not
+enforce a deadline with a timer, because racing a JavaScript callback against a
+timer cannot cancel it: the timed-out work keeps running and may complete after
+the failure response. Admit durable work promptly — dispatch and return —
+rather than performing slow operations before responding, and schedule
+long-running processing outside the webhook response path. A thrown callback
+propagates to Hono's error handler.
 
 Shopify retries failed HTTPS deliveries eight times over four hours. Deliveries
-can be duplicated or arrive out of order. Use `event.webhookId` in
-application-owned durable storage for delivery deduplication. Optional
-`event.eventId` correlates separate deliveries caused by the same merchant
-action; it does not replace the webhook id.
+can be duplicated or arrive out of order. Use
+`c.req.header('x-shopify-webhook-id')` in application-owned durable storage for
+delivery deduplication, relying on idempotency rather than a timeout to keep
+retries safe. Optional `c.req.header('x-shopify-event-id')` correlates separate
+deliveries caused by the same merchant action; it does not replace the webhook
+id.
 
 The channel does not register subscriptions, persist delivery ids, restore
 ordering, manage installation tokens, or infer a conversation or resource key.
@@ -321,9 +334,9 @@ Worker bindings. Test the exact GraphQL operations used by the application
 against its Worker target.
 
 Create original synthetic webhook bodies and locally generated HMACs. Cover
-valid and tampered exact bytes, current and previous secrets, required
-headers, safe and unsafe numeric identifiers, unknown topics, malformed JSON,
-body limits, handler results, and timeouts. Test
+valid and tampered exact bytes, current and previous secrets, deliveries that
+omit optional metadata headers, safe and unsafe numeric identifiers, unknown
+topics, malformed JSON, body limits, and handler results. Test
 `createShopifyClient(fakeFetch)` in Node and workerd with a fake transport that
 rejects unexpected hosts and paths. No test should register a webhook or
 contact Shopify.
