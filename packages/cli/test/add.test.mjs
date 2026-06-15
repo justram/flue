@@ -65,6 +65,7 @@ before(async () => {
 			postgres: 'database--postgres.md',
 			libsql: 'database--libsql.md',
 			mysql: 'database--mysql.md',
+			supabase: 'database--supabase.md',
 			turso: 'database--turso.md',
 		};
 		const file = slug ? files[slug] : undefined;
@@ -150,6 +151,7 @@ describe('flue add', () => {
 			/flue add database libsql\s+database\s+https:\/\/github\.com\/tursodatabase\/libsql/,
 		);
 		assert.match(result.stderr, /flue add database mysql\s+database\s+https:\/\/www\.mysql\.com/);
+		assert.match(result.stderr, /flue add database supabase\s+database\s+https:\/\/supabase\.com/);
 		assert.match(result.stderr, /flue add database turso\s+database\s+https:\/\/turso\.tech/);
 		assert.ok(result.stderr.includes('flue add sandbox <url>'));
 		assert.ok(result.stderr.includes('flue add channel <url>'));
@@ -401,6 +403,17 @@ describe('flue add', () => {
 		assert.ok(mysql.stdout.includes('This comparison is required when the marker is missing.'));
 		assert.ok(mysql.stdout.includes('### Version 1 — 2026-06-14\n\nInitial version.'));
 
+		const supabase = await runCli(['add', 'database', 'supabase', '--print']);
+		assert.equal(supabase.code, 0);
+		assert.ok(supabase.stdout.includes('@flue/postgres'));
+		assert.ok(supabase.stdout.includes('// flue-blueprint: database/supabase@1'));
+		assert.ok(supabase.stdout.includes('SUPABASE_DATABASE_URL'));
+		assert.ok(supabase.stdout.includes("client.query('BEGIN')"));
+		assert.ok(supabase.stdout.includes("client.query('COMMIT')"));
+		assert.ok(supabase.stdout.includes("client.query('ROLLBACK')"));
+		assert.ok(supabase.stdout.includes('pg_advisory_xact_lock'));
+		assert.ok(supabase.stdout.includes('This comparison is required when the marker is missing.'));
+
 		const turso = await runCli(['add', 'database', 'turso', '--print']);
 		assert.equal(turso.code, 0);
 		assert.ok(turso.stdout.includes('@flue/libsql'));
@@ -485,6 +498,15 @@ describe('flue update', () => {
 		assert.equal(updated.code, 0);
 		assert.equal(updated.stdout, added.stdout);
 		assert.ok(updated.stdout.includes('// flue-blueprint: database/mysql@1'));
+	});
+
+	it('prints the exact same Supabase blueprint as flue add', async () => {
+		const added = await runCli(['add', 'database', 'supabase', '--print']);
+		const updated = await runCli(['update', 'database', 'supabase', '--print']);
+
+		assert.equal(updated.code, 0);
+		assert.equal(updated.stdout, added.stdout);
+		assert.ok(updated.stdout.includes('// flue-blueprint: database/supabase@1'));
 	});
 
 	it('prints the exact same URL-substituted blueprint as flue add', async () => {
