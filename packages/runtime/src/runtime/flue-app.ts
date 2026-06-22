@@ -41,6 +41,7 @@ import { generateWorkflowRunId } from './ids.ts';
 import { invokeWorkflow, type WorkflowInvokeRequest, type WorkflowInvocationReceipt } from './invoke.ts';
 import type { WorkflowDefinition } from '../workflow-definition.ts';
 import type { RunStore, WorkflowRunPointer } from './run-store.ts';
+import type { RuntimeActivityGate } from './runtime-activity-gate.ts';
 
 import {
 	AgentAdmissionResponseSchema,
@@ -70,12 +71,14 @@ export interface WorkflowRecord {
 
 interface RuntimeBase {
 	devMode?: boolean;
+	temporaryLocalExposure?: boolean;
 	runtimeVersion?: string;
 	agents: AgentRecord[];
 	workflows: WorkflowRecord[];
 	channelHandlers?: Record<string, Record<string, (c: Context) => Response | Promise<Response>>>;
 	dispatchQueue: DispatchQueue;
 	admitWorkflow: (input: { workflowName: string; input: unknown }) => Promise<{ runId: string }>;
+	activityGate?: RuntimeActivityGate;
 }
 
 export interface NodeRuntime extends RuntimeBase {
@@ -478,6 +481,7 @@ const workflowRouteHandler: MiddlewareHandler = async (c) => {
 				createContext: rt.createWorkflowContext,
 				runStore: rt.runStore,
 				eventStreamStore: rt.eventStreamStore,
+				activityGate: rt.activityGate,
 			});
 		}
 
@@ -485,7 +489,7 @@ const workflowRouteHandler: MiddlewareHandler = async (c) => {
 		// runId; the DO it lands on then re-uses that value to seed its run
 		// record via handleWorkflowRequest({ runId: instanceId, ... }).
 		const response = await rt.routeWorkflowRequest(
-			normalizeAttachedRequest(request, `/workflows/${encodeURIComponent(name)}`),
+			request,
 			c.env,
 			{
 				workflowName: name,
@@ -598,7 +602,16 @@ const channelRouteHandler: MiddlewareHandler = async (c) => {
 		});
 	}
 
-	const response = normalizeFetchResponse(await handler(c));
+	const lease = rt.activityGate?.enter();
+	let response: Response | undefined;
+	try {
+		response = normalizeFetchResponse(await handler(c));
+		if (response?.body && lease) response = retainActivityLease(response, lease);
+		else lease?.release();
+	} catch (error) {
+		lease?.release();
+		throw error;
+	}
 	if (!response) {
 		throw new TypeError(
 			`[flue] Channel "${name}" handler for ${c.req.method} ${suffix} must return a Response.`,
@@ -606,6 +619,44 @@ const channelRouteHandler: MiddlewareHandler = async (c) => {
 	}
 	return response;
 };
+
+function retainActivityLease(
+	response: Response,
+	lease: { release(): void },
+): Response {
+	const body = response.body;
+	if (!body) {
+		lease.release();
+		return response;
+	}
+	const reader = body.getReader();
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			async pull(controller) {
+				try {
+					const result = await reader.read();
+					if (result.done) {
+						lease.release();
+						controller.close();
+						return;
+					}
+					controller.enqueue(result.value);
+				} catch (error) {
+					lease.release();
+					controller.error(error);
+				}
+			},
+			async cancel(reason) {
+				try {
+					await reader.cancel(reason);
+				} finally {
+					lease.release();
+				}
+			},
+		}),
+		{ status: response.status, statusText: response.statusText, headers: response.headers },
+	);
+}
 
 function normalizeFetchResponse(value: unknown): Response | undefined {
 	if (value instanceof globalThis.Response) return value;
@@ -642,7 +693,9 @@ const runStreamReadHandler: MiddlewareHandler = async (c) => {
 		? rt.workflows.find((record) => record.name === pointer.workflowName)
 		: undefined;
 
-	if (!workflow?.runs) throw new RunNotFoundError({ runId });
+	if (!workflow || (!workflow.runs && !rt.temporaryLocalExposure)) {
+		throw new RunNotFoundError({ runId });
+	}
 
 	return runAttachedMiddleware(c, workflow.runs, async () => {
 		if (method !== 'GET' && method !== 'HEAD') {
@@ -759,18 +812,14 @@ async function runAttachedMiddleware(
 	);
 }
 
-function normalizeAttachedRequest(request: Request, pathname: string): Request {
-	const url = new URL(request.url);
-	url.pathname = pathname;
-	return new Request(url, request);
-}
-
 function registeredAgentsForTransport(rt: FlueRuntime): readonly string[] {
-	return rt.agents.filter((agent) => agent.route !== undefined).map((agent) => agent.name);
+	return rt.agents
+		.filter((agent) => rt.temporaryLocalExposure || agent.route !== undefined)
+		.map((agent) => agent.name);
 }
 
 function registeredWorkflowsForTransport(rt: FlueRuntime): readonly string[] {
 	return rt.workflows
-		.filter((workflow) => workflow.route !== undefined)
+		.filter((workflow) => rt.temporaryLocalExposure || workflow.route !== undefined)
 		.map((workflow) => workflow.name);
 }

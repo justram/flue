@@ -21,7 +21,14 @@ export interface WorkflowDefinition<TAction extends ActionDefinition = ActionDef
 	readonly action: TAction;
 }
 
-const workflowDefinitions = new WeakSet<object>();
+const WORKFLOW_DEFINITIONS_KEY = Symbol.for('@flue/runtime/workflow-definitions');
+const runtimeGlobal = globalThis as typeof globalThis & {
+	[WORKFLOW_DEFINITIONS_KEY]?: WeakSet<object>;
+};
+if (!runtimeGlobal[WORKFLOW_DEFINITIONS_KEY]) {
+	runtimeGlobal[WORKFLOW_DEFINITIONS_KEY] = new WeakSet<object>();
+}
+const workflowDefinitions = runtimeGlobal[WORKFLOW_DEFINITIONS_KEY];
 
 type ExtractedWorkflowOptions<TAction extends ActionDefinition> = {
 	agent: AgentDefinition;

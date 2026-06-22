@@ -7,6 +7,7 @@ import {
 	type KnownProvider,
 	type Model,
 	registerApiProvider as piRegisterApiProvider,
+	resetApiProviders,
 } from '@earendil-works/pi-ai';
 import type { CloudflareGatewayOptions } from '../cloudflare/gateway.ts';
 import { CLOUDFLARE_AI_BINDING_API } from '../cloudflare-model.ts';
@@ -151,8 +152,9 @@ export function registerProvider(providerId: string, registration: ProviderRegis
 	providersById.set(providerId, registration);
 }
 
-export function resetProvidersForTests(): void {
+export function resetProviderRuntime(): void {
 	providersById.clear();
+	resetApiProviders();
 }
 
 /** Whether a provider ID has already been registered. */
@@ -175,7 +177,7 @@ export function getRegisteredStoreResponses(providerId: string): boolean {
 }
 
 /**
- * Re-export of pi-ai's `registerApiProvider`. Use to register a brand-new
+ * Register a brand-new pi-ai wire-protocol handler. Use this before
  * wire-protocol handler for an `api` slug pi-ai doesn't ship. Then call
  * {@link registerProvider} to associate a provider ID with that api.
  *
@@ -189,7 +191,11 @@ export function getRegisteredStoreResponses(providerId: string): boolean {
  * so generated code can register on every isolate boot without dedupe
  * bookkeeping.
  */
-export const registerApiProvider = piRegisterApiProvider;
+export function registerApiProvider(
+	provider: Parameters<typeof piRegisterApiProvider>[0],
+): void {
+	piRegisterApiProvider(provider, 'flue-runtime');
+}
 
 // ─── Model binding extension ────────────────────────────────────────────────
 

@@ -86,6 +86,37 @@ describe('NodePlugin', () => {
 		expect(entry).not.toContain("flueApp.fetch(new Request('https://flue.invalid/_internal/workflows/");
 	});
 
+	it('passes temporary local HTTP exposure into runtime configuration', () => {
+		const entry = new NodePlugin().generateEntryPoint(
+			testBuildContext({ temporaryLocalExposure: true }),
+		);
+
+		expect(entry).toContain('temporaryLocalExposure: true');
+	});
+
+	it('keeps process lifecycle handlers out of the reusable local runtime', () => {
+		const plugin = new NodePlugin();
+		const context = testBuildContext({
+			agents: [{ name: 'assistant', filePath: '/fixture/agents/assistant.ts' }],
+		});
+
+		const runtimeEntry = plugin.generateRuntimeEntryPoint(context);
+		const deploymentEntry = plugin.generateEntryPoint(context);
+
+		expect(runtimeEntry).not.toContain("process.on('SIGINT'");
+		expect(runtimeEntry).not.toContain('process.exit(');
+		expect(deploymentEntry).toContain("process.on('SIGINT'");
+		expect(deploymentEntry).toContain('process.exit(');
+	});
+
+	it('restores scoped output and aggregates application cleanup failures', () => {
+		const entry = new NodePlugin().generateRuntimeEntryPoint(testBuildContext());
+
+		expect(entry).toContain('outputContext.exit(() => options.onOutput');
+		expect(entry).toContain('restoreOutput();');
+		expect(entry).toContain('new AggregateError(errors');
+	});
+
 	it('imports discovered channels and configures their normalized handlers', () => {
 		const entry = new NodePlugin().generateEntryPoint(
 			testBuildContext({

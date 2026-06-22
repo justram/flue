@@ -12,20 +12,23 @@
  * Node path treats every non-ignored change as a rebuild trigger; the
  * Cloudflare path filters to "structural" changes only.
  */
-import { type ChildProcess, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
+import { createServer } from 'node:net';
 import * as path from 'node:path';
 import createDebug from 'debug';
 import {
 	build,
-	cloudflareViteConfigPath,
-	createCloudflareViteConfig,
 	discoverAgents,
 	discoverChannels,
 	discoverWorkflows,
 } from './build.ts';
 import pc from 'picocolors';
 import { createEnvLoader, type EnvLoader, selectEnvFile } from './env.ts';
+import {
+	type LocalHttpRuntime,
+	startCloudflareLocalRuntime,
+} from './local-http-runtime.ts';
+import { createNodeLocalRuntime, type NodeLocalRuntime } from './node-local-runtime.ts';
 import { devLog, devServerBanner, error, note } from './terminal.ts';
 import type { BuildOptions } from './types.ts';
 
@@ -47,6 +50,7 @@ export interface DevOptions {
 	target: 'node' | 'cloudflare';
 	/** Defaults to 3583 ("FLUE" on a phone keypad). */
 	port?: number;
+	strictPort?: boolean;
 	envFile?: string;
 	envLoader?: EnvLoader;
 	configFiles?: readonly string[];
@@ -101,7 +105,10 @@ export async function dev(options: DevOptions): Promise<void> {
 	const root = path.resolve(options.root);
 	const sourceRoot = path.resolve(options.sourceRoot);
 	const output = path.resolve(options.output ?? path.join(root, 'dist'));
-	const port = options.port ?? DEFAULT_DEV_PORT;
+	const requestedPort = options.port ?? DEFAULT_DEV_PORT;
+	const port = options.target === 'node' && options.strictPort !== true
+		? await selectAvailableDevPort(requestedPort)
+		: requestedPort;
 	debugDev('starting target=%s root=%s source=%s output=%s port=%d', options.target, root, sourceRoot, output, port);
 
 	const envFile = options.envLoader?.file ?? selectEnvFile(options.envFile, root);
@@ -119,20 +126,17 @@ export async function dev(options: DevOptions): Promise<void> {
 		envFile: fs.existsSync(envFile) ? envFile : undefined,
 	};
 
-	try {
-		if (options.target === 'cloudflare') {
+	if (options.target === 'cloudflare') {
+		try {
 			await envLoader.withApplied(() => build(buildOptions));
-		} else {
-			await build(buildOptions);
+		} catch (err) {
+			throw new Error(`Initial build failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
-	} catch (err) {
-		throw new Error(`Initial build failed: ${err instanceof Error ? err.message : String(err)}`);
+		envLoader.restore();
 	}
-
-	if (options.target === 'cloudflare') envLoader.restore();
 	const reloader: DevReloader =
 		options.target === 'node'
-			? new NodeReloader({ root, output, port })
+			? new NodeReloader({ root, sourceRoot, port })
 			: new CloudflareReloader({ root, sourceRoot, port });
 
 	await reloader.start();
@@ -156,7 +160,7 @@ export async function dev(options: DevOptions): Promise<void> {
 	const rebuild =
 		options.target === 'cloudflare'
 			? () => envLoader.withApplied(() => build(buildOptions))
-			: () => build(buildOptions);
+			: async () => ({ changed: true });
 	const rebuilder = createRebuilder(reloader, rebuild);
 	const watcher = createWatcher({
 		root,
@@ -251,7 +255,7 @@ function createRebuilder(
 			await reloader.reload(changed || force);
 			const duration = Date.now() - start;
 			debugWatch('rebuild completed duration=%dms', duration);
-			devLog(`${pc.dim('rebuilt in')} ${duration}ms`);
+			devLog(`${pc.dim('reloaded in')} ${duration}ms`);
 		} catch (err) {
 			// Don't exit the dev loop on a rebuild error — the user is editing
 			// code, they'll fix it and trigger another rebuild.
@@ -408,217 +412,93 @@ function createWatcher(options: WatcherOptions): WatcherHandle {
 // ─── Node reloader ──────────────────────────────────────────────────────────
 
 class NodeReloader implements DevReloader {
-	private child: ChildProcess | null = null;
-	// Old child that received SIGTERM and is draining; tracked separately so
-	// the `process.on('exit')` killSync safety net can still reach it.
-	private draining: ChildProcess | null = null;
-	private readonly serverPath: string;
+	private runtime: NodeLocalRuntime | null = null;
 	private readonly root: string;
+	private readonly sourceRoot: string;
 	private readonly port: number;
 	url: string;
 
-	constructor(opts: { root: string; output: string; port: number }) {
+	constructor(opts: { root: string; sourceRoot: string; port: number }) {
 		this.root = opts.root;
+		this.sourceRoot = opts.sourceRoot;
 		this.port = opts.port;
-		this.serverPath = path.join(opts.output, 'server.mjs');
 		this.url = `http://localhost:${this.port}`;
 	}
 
 	async start(): Promise<void> {
-		await this.spawnAndWait();
+		debugServer('starting node module runtime port=%d', this.port);
+		this.runtime = await createNodeLocalRuntime({
+			root: this.root,
+			sourceRoot: this.sourceRoot,
+			port: this.port,
+			temporaryLocalExposure: false,
+			env: process.env,
+			internalDevLogs: true,
+			onOutput: ({ line }) => this.renderLine(line),
+		});
+		await this.runtime.start();
+		debugServer('node server ready port=%d', this.port);
 	}
 
-	// Node has no downstream watcher — every root change requires a
-	// rebuild + child respawn. The watcher's ignore list already filters
-	// dist/, node_modules/, etc.
 	shouldRebuildOn(_relPath: string): boolean {
 		return true;
 	}
 
 	async reload(_buildChanged: boolean): Promise<void> {
-		// On Node we always restart the child after a successful rebuild because
-		// it has the previous server module graph loaded in memory.
-		await this.killChild();
-		await this.spawnAndWait();
+		await this.runtime?.reload();
 	}
 
 	async stop(): Promise<void> {
-		await this.killChild();
+		await this.runtime?.stop();
+		this.runtime = null;
 	}
 
 	killSync(): void {
-		// `child.killed` only means a signal was sent, not that the process
-		// exited — check exitCode/signalCode for actual liveness.
-		for (const child of [this.child, this.draining]) {
-			if (!child || child.exitCode !== null || child.signalCode !== null) continue;
-			try {
-				child.kill('SIGKILL');
-			} catch {
-				/* ignore */
-			}
-		}
+		this.runtime?.closeSync();
 	}
 
 	// ── Internals ──
 
-	private async spawnAndWait(): Promise<void> {
-		debugServer('spawning node server path=%s port=%d', this.serverPath, this.port);
-		const child = spawn(process.execPath, [this.serverPath], {
-			stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-			cwd: this.root,
-			env: {
-				...process.env,
-				PORT: String(this.port),
-				FLUE_MODE: 'local',
-				FLUE_INTERNAL_DEV_LOGS: '1',
-			},
-		});
-		this.child = child;
-		debugServer('spawned node server pid=%d', child.pid);
-
-		const renderLine = (line: string) => {
-			if (!line.trim()) return;
-			if (
-				line.includes('[flue] Server listening') ||
-				line.includes('[flue] Agents:') ||
-				line.includes('[flue] Mode: local')
-			) {
-				return;
-			}
-			const lifecycle = line.match(/^(\[(?:agent|workflow)\]\s+)(\S+@\S+)(.*)$/);
-			devLog(lifecycle ? `${lifecycle[1]}${pc.blue(lifecycle[2] ?? '')}${lifecycle[3]}` : line);
-		};
-		const pipe = (suppressSqliteWarning: boolean) => {
-			let buffered = '';
-			let suppressWarningHint = false;
-			const write = (line: string) => {
-				if (
-					suppressSqliteWarning &&
-					line.includes('ExperimentalWarning: SQLite is an experimental feature and might change at any time')
-				) {
-					suppressWarningHint = true;
-					return;
-				}
-				if (suppressWarningHint) {
-					suppressWarningHint = false;
-					if (line.trim() === '(Use `node --trace-warnings ...` to show where the warning was created)') {
-						return;
-					}
-				}
-				renderLine(line);
-			};
-			return {
-				onData(data: Buffer) {
-					buffered += data.toString();
-					const lines = buffered.split('\n');
-					buffered = lines.pop() ?? '';
-					for (const line of lines) write(line);
-				},
-				onEnd() {
-					if (buffered) write(buffered);
-				},
-			};
-		};
-		const stdout = pipe(false);
-		const stderr = pipe(true);
-		child.stdout?.on('data', stdout.onData);
-		child.stdout?.on('end', stdout.onEnd);
-		child.stderr?.on('data', stderr.onData);
-		child.stderr?.on('end', stderr.onEnd);
-
-		const ready = waitForNodeReady(child);
-		child.on('exit', (code, signal) => {
-			debugServer('node server exited pid=%d code=%s signal=%s', child.pid, code, signal);
-			if (this.child === child) {
-				this.child = null;
-				if (code !== 0 && code !== null) {
-					error(`Node server exited unexpectedly (code=${code}, signal=${signal ?? 'none'})`);
-				}
-			}
-		});
-
-		try {
-			await ready;
-			debugServer('node server ready pid=%d port=%d', child.pid, this.port);
-		} catch (error) {
-			await this.killChild();
-			throw error;
+	private renderLine(line: string): void {
+		if (!line.trim()) return;
+		if (
+			line.includes('[flue] Server listening') ||
+			line.includes('[flue] Agents:') ||
+			line.includes('[flue] Mode: local')
+		) {
+			return;
 		}
-	}
-
-	private async killChild(): Promise<void> {
-		const child = this.child;
-		this.child = null;
-		if (!child || child.exitCode !== null || child.signalCode !== null) return;
-		debugServer('stopping node server pid=%d', child.pid);
-		this.draining = child;
-		await new Promise<void>((resolve) => {
-			let timer: NodeJS.Timeout | undefined;
-			let resolved = false;
-			const done = () => {
-				if (!resolved) {
-					debugServer('node server stopped pid=%d', child.pid);
-					resolved = true;
-					clearTimeout(timer);
-					if (this.draining === child) this.draining = null;
-					resolve();
-				}
-			};
-			child.once('exit', done);
-			try {
-				child.kill('SIGTERM');
-			} catch {
-				done();
-				return;
-			}
-			// Tight 1s SIGKILL escalation: the generated server drains in-flight
-			// work on SIGTERM (up to 30s), but it keeps the port bound while
-			// draining and the respawned server would hit EADDRINUSE. Note that
-			// `child.killed` only means a signal was sent, so liveness must be
-			// tracked via the 'exit' event; we resolve only once the child has
-			// actually exited and released the port.
-			timer = setTimeout(() => {
-				debugServer('force stopping node server pid=%d', child.pid);
-				try {
-					child.kill('SIGKILL');
-				} catch {
-					done();
-				}
-			}, 1_000);
-		});
+		if (line.includes('ExperimentalWarning: SQLite is an experimental feature and might change at any time')) return;
+		if (line.trim() === '(Use `node --trace-warnings ...` to show where the warning was created)') return;
+		const lifecycle = line.match(/^(\[(?:agent|workflow)\]\s+)(\S+@\S+)(.*)$/);
+		devLog(lifecycle ? `${lifecycle[1]}${pc.blue(lifecycle[2] ?? '')}${lifecycle[3]}` : line);
 	}
 }
 
 // ─── Cloudflare reloader ────────────────────────────────────────────────────
 
 class CloudflareReloader implements DevReloader {
-	private server: Awaited<ReturnType<typeof import('vite').createServer>> | null = null;
+	private runtime: LocalHttpRuntime | null = null;
 	private readonly root: string;
 	private readonly sourceRoot: string;
 	private readonly port: number;
-	private readonly configPath: string;
 	url?: string;
 
 	constructor(opts: { root: string; sourceRoot: string; port: number }) {
 		this.root = opts.root;
 		this.sourceRoot = opts.sourceRoot;
 		this.port = opts.port;
-		this.configPath = cloudflareViteConfigPath(opts.root);
 	}
 
 	async start(): Promise<void> {
-		const [{ cloudflare }, { createServer }] = await Promise.all([
-			import('@cloudflare/vite-plugin'),
-			import('vite'),
-		]);
-		this.server = await createServer({
-			...createCloudflareViteConfig(cloudflare, this.root, this.configPath),
-			logLevel: 'info',
-			server: { host: '127.0.0.1', port: this.port, strictPort: true },
+		const started = await startCloudflareLocalRuntime({
+			root: this.root,
+			port: this.port,
+			watch: true,
+			cloudflareLogLevel: 'info',
 		});
-		await this.server.listen();
-		this.url =
-			this.server.resolvedUrls?.local[0]?.replace(/\/$/, '') ?? `http://127.0.0.1:${this.port}`;
+		this.runtime = { target: 'cloudflare', ...started };
+		this.url = started.url;
 	}
 
 	shouldRebuildOn(relPath: string): boolean {
@@ -633,43 +513,33 @@ class CloudflareReloader implements DevReloader {
 	}
 
 	async reload(buildChanged: boolean): Promise<void> {
-		if (buildChanged) await this.server?.restart();
+		if (buildChanged) await this.runtime?.reload();
 	}
 
 	async stop(): Promise<void> {
-		await this.server?.close();
-		this.server = null;
+		await this.runtime?.stop();
+		this.runtime = null;
+	}
+
+	killSync(): void {
+		this.runtime?.killSync();
 	}
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-async function waitForNodeReady(child: ChildProcess): Promise<void> {
-	await new Promise<void>((resolve, reject) => {
-		const timer = setTimeout(() => {
-			cleanup();
-			reject(new Error('Timed out waiting for Node server to become ready.'));
-		}, 10_000);
-		const cleanup = () => {
-			clearTimeout(timer);
-			child.off('message', onMessage);
-			child.off('exit', onExit);
-		};
-		const onMessage = (message: unknown) => {
-			if (message !== 'flue:dev-ready') return;
-			cleanup();
-			resolve();
-		};
-		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-			cleanup();
-			reject(
-				new Error(
-					`Node server exited before becoming ready (code=${code ?? 'none'}, signal=${signal ?? 'none'}).`,
-				),
-			);
-		};
-		child.on('message', onMessage);
-		child.once('exit', onExit);
+async function selectAvailableDevPort(start: number): Promise<number> {
+	for (let port = start; port <= 65_535; port += 1) {
+		if (await canListen(port)) return port;
+	}
+	throw new Error(`No available port found at or above ${start}.`);
+}
+
+async function canListen(port: number): Promise<boolean> {
+	return new Promise<boolean>((resolve) => {
+		const server = createServer();
+		server.once('error', () => resolve(false));
+		server.listen(port, () => server.close(() => resolve(true)));
 	});
 }
 

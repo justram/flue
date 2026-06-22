@@ -17,6 +17,7 @@ import type { AgentInteractionStart } from '../runtime/dev-lifecycle-logger.ts';
 import type { DispatchInput, DispatchQueue } from '../runtime/dispatch-queue.ts';
 import { agentStreamPath } from '../runtime/event-stream-store.ts';
 import type { CreateAgentContextFn } from '../runtime/handle-agent.ts';
+import type { RuntimeActivityGate, RuntimeActivityLease } from '../runtime/runtime-activity-gate.ts';
 import { isStreamExcludedEvent } from '../runtime/run-store.ts';
 import { deleteSessionTree } from '../session.ts';
 import type {
@@ -96,8 +97,9 @@ export function createNodeAgentCoordinator(options: {
 	createContext: CreateAgentContextFn;
 	eventStreamStore: import('../runtime/event-stream-store.ts').EventStreamStore;
 	onInteractionStart?: (interaction: AgentInteractionStart) => void;
+	activityGate?: RuntimeActivityGate;
 }): NodeAgentCoordinator {
-	const { submissions, sessions, agents, createContext, eventStreamStore, onInteractionStart } = options;
+	const { submissions, sessions, agents, createContext, eventStreamStore, onInteractionStart, activityGate } = options;
 	const observers = createAgentSubmissionObserverRegistry();
 
 	// ── Lease ownership ──────────────────────────────────────────────────
@@ -117,6 +119,7 @@ export function createNodeAgentCoordinator(options: {
 
 	/** Submissions currently being processed, keyed by submissionId. */
 	const activeSubmissions = new Map<string, { task: Promise<void>; abort: AbortController }>();
+	const activityLeases = new Map<string, RuntimeActivityLease>();
 
 	/**
 	 * Wake signal. The claim loop sleeps on `wakePromise` when there is
@@ -171,11 +174,9 @@ export function createNodeAgentCoordinator(options: {
 			// Subscribe to events for durable agent event persistence.
 			// createStream is called before processSubmission (see spawnSubmissionTask).
 			const streamPath = agentStreamPath(input.agent, input.id);
-			ctx.subscribeEvent((event) => {
-				if (isStreamExcludedEvent(event)) return;
-				eventStreamStore.appendEvent(streamPath, event).catch((error) => {
-					console.error('[flue:event-stream] appendEvent failed:', error);
-				});
+			ctx.subscribeEvent(async (event) => {
+				if (isStreamExcludedEvent(event) || event.type === 'submission_settled') return;
+				await eventStreamStore.appendEvent(streamPath, event);
 			});
 			return ctx;
 		};
@@ -207,6 +208,12 @@ export function createNodeAgentCoordinator(options: {
 				resolveAgent,
 				createContext: makeSubmissionContext(claimed.input),
 				observers,
+				deliverTerminalEvent: (terminal) =>
+					eventStreamStore.appendEventOnce(
+						agentStreamPath(claimed.input.agent, claimed.input.id),
+						terminal.eventKey,
+						terminal.event,
+					),
 				onInteractionStart,
 				signal: controller.signal,
 				isShutdownAbort: (error) =>
@@ -228,6 +235,8 @@ export function createNodeAgentCoordinator(options: {
 			})
 			.finally(() => {
 				activeSubmissions.delete(claimed.submissionId);
+				activityLeases.get(claimed.submissionId)?.release();
+				activityLeases.delete(claimed.submissionId);
 				wake();
 			});
 		activeSubmissions.set(claimed.submissionId, { task, abort: controller });
@@ -399,6 +408,28 @@ export function createNodeAgentCoordinator(options: {
 	}
 
 	async function runReconciliationPass(): Promise<void> {
+		for (const terminal of await submissions.listPendingTerminalOutboxes()) {
+			const submission = await submissions.getSubmission(terminal.submissionId);
+			if (!submission || submission.kind !== 'direct') continue;
+			const streamPath = agentStreamPath(submission.input.agent, submission.input.id);
+			await eventStreamStore.createStream(streamPath);
+			const offset = terminal.offset ?? (await eventStreamStore.appendEventOnce(streamPath, terminal.eventKey, terminal.event));
+			const attempt = { submissionId: terminal.submissionId, attemptId: terminal.attemptId };
+			await submissions.recordSubmissionTerminalOffset(attempt, terminal.eventKey, offset);
+			if (await submissions.finalizeSubmissionTerminal(attempt, terminal.eventKey)) {
+				const journal = await submissions.getTurnJournal(terminal.submissionId);
+				if (journal?.streamKey) await submissions.deleteStreamChunkSegments(journal.streamKey);
+				const event = terminal.event as {
+					outcome?: 'completed' | 'failed';
+					result?: unknown;
+					error?: { message?: string };
+				};
+				if (event.outcome === 'completed') observers.complete(terminal.submissionId, event.result);
+				if (event.outcome === 'failed') {
+					observers.fail(terminal.submissionId, new Error(event.error?.message ?? 'Agent submission failed.'));
+				}
+			}
+		}
 		for (const submission of await submissions.listExpiredSubmissions()) {
 			// Skip submissions still actively processing in this coordinator
 			// (possible when heartbeat renewals fail transiently and the lease
@@ -432,6 +463,12 @@ export function createNodeAgentCoordinator(options: {
 					submission,
 					agent,
 					makeSubmissionContext(submission.input),
+					(terminal) =>
+						eventStreamStore.appendEventOnce(
+							agentStreamPath(submission.input.agent, submission.input.id),
+							terminal.eventKey,
+							terminal.event,
+						),
 					{ ownerId, leaseExpiresAt: Date.now() + LEASE_DURATION_MS },
 				);
 				if (reconciled.disposition === 'replacement') {
@@ -499,19 +536,27 @@ export function createNodeAgentCoordinator(options: {
 
 		async admitDispatch(input) {
 			if (stopping) throw new Error('[flue] Coordinator is shutting down.');
-			const agent = agents.find((record) => record.name === input.agent)?.definition;
-			if (!agent) {
-				throw new Error(`[flue] dispatch target agent "${input.agent}" has no agent definition.`);
+			const activityLease = activityGate?.enter();
+			try {
+				const agent = agents.find((record) => record.name === input.agent)?.definition;
+				if (!agent) {
+					throw new Error(`[flue] dispatch target agent "${input.agent}" has no agent definition.`);
+				}
+
+				const admission = await submissions.admitDispatch(input);
+				if (admission.kind !== 'submission') {
+					activityLease?.release();
+					return admission;
+				}
+
+				if (activityLease) activityLeases.set(admission.submission.submissionId, activityLease);
+				ensureClaimLoop();
+				wake();
+				return admission;
+			} catch (error) {
+				activityLease?.release();
+				throw error;
 			}
-
-			const admission = await submissions.admitDispatch(input);
-			if (admission.kind !== 'submission') return admission;
-
-			// Ensure the claim loop is running and wake it to pick up the
-			// new submission. Processing happens asynchronously.
-			ensureClaimLoop();
-			wake();
-			return admission;
 		},
 
 		createAdmission(agentName: string, instanceId: string): AttachedAgentSubmissionAdmission {
@@ -521,8 +566,10 @@ export function createNodeAgentCoordinator(options: {
 				waitForResult = true,
 			) => {
 				if (stopping) throw new Error('[flue] Coordinator is shutting down.');
+				const activityLease = activityGate?.enter();
 				const agent = agents.find((record) => record.name === agentName)?.definition;
 				if (!agent) {
+					activityLease?.release();
 					throw new Error(`[flue] direct prompt target agent "${agentName}" has no agent definition.`);
 				}
 
@@ -535,15 +582,13 @@ export function createNodeAgentCoordinator(options: {
 				const attachment = observers.attach(input.submissionId, { onEvent });
 				try {
 					await submissions.admitDirect(input);
-					// Wake the claim loop — the observer's completion promise
-					// resolves when processSubmission settles or fails this submission.
+					if (activityLease) activityLeases.set(input.submissionId, activityLease);
 					ensureClaimLoop();
 					wake();
 					if (!waitForResult) return { submissionId: input.submissionId };
 					return { submissionId: input.submissionId, result: await attachment.completion };
 				} catch (error) {
-					// If admission itself fails (before the claim loop could
-					// pick it up), fail the observer so the caller doesn't hang.
+					activityLease?.release();
 					observers.fail(input.submissionId, error);
 					throw error;
 				} finally {
