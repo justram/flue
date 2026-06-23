@@ -33,7 +33,7 @@ Determine the following. Ask the user only for information you do not already kn
    - If they do not answer, or are not sure yet, create a minimal \`hello-world\` agent module only. Do not create a workflow by default.
    - Choose **agent only** for a continuing assistant or event-driven agent with an identity and sessions that can accept interactions over time. Examples: a chat assistant, support agent, coding agent, or message-driven triage agent.
    - Choose **agent + workflow** when they also need a bounded job that runs once and returns a result. Examples: summarize a ticket, generate a report, handle a CI task, or execute scheduled/batch orchestration.
-   - Do not create a workflow merely to test an agent. Use `flue run <agent-name> --input '{"message":"..."}'` for one local prompt.
+   - Do not create a workflow merely to test an agent. Use \`flue run <agent-name> --input '{"message":"..."}'\` for one local prompt.
 2. Where should the project live on disk?
    - Use filesystem tools to inspect the current working directory first, then confirm the target directory with the user.
    - Flue supports three authored source layouts:
@@ -76,7 +76,7 @@ Before implementing, restate the chosen requirements to yourself as an implement
 3. Always create one minimal **agent module** matching the user's idea, keeping it closer to "hello world" than a production app.
    - Put it in the selected layout's immediate \`agents/\` directory, using a lower-kebab-case filename such as \`src/agents/hello-world.ts\`.
    - It must default-export \`defineAgent(() => ({ model: '<exact model specifier>', instructions: '<short purpose-specific instruction>' }))\`.
-   - Do not export `route` unless the user needs direct HTTP access. For a basic local starter, use `flue run <agent-name> --input '{"message":"..."}'`; the temporary runtime exposes route-free resources through the application's existing authored `flue()` mount.
+   - Do not export \`route\` unless the user needs direct HTTP access. For a basic local starter, use \`flue run <agent-name> --input '{"message":"..."}'\`; the temporary runtime exposes route-free resources through the application's existing authored \`flue()\` mount.
 4. If the selected shape is **agent + workflow**, create one minimal **workflow module** for the finite job.
    - Put it in the selected layout's immediate \`workflows/\` directory, using a lower-kebab-case filename.
     - Import \`defineWorkflow\` and the agent definition, then default-export \`defineWorkflow({ agent, async run({ harness }) { ... } })\`. Open a session from the supplied harness, perform one purpose-specific operation, and return its result.

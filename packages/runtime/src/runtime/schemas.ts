@@ -19,38 +19,6 @@ export const DirectAgentPayloadSchema = v.object({
 	images: v.optional(v.array(DirectAgentImageSchema)),
 });
 
-export const ErrorEnvelopeSchema = v.object({
-	error: v.object({
-		type: v.string(),
-		message: v.string(),
-		details: v.string(),
-		dev: v.optional(v.string()),
-		meta: v.optional(v.record(v.string(), v.unknown())),
-	}),
-});
-
-export const AgentAdmissionResponseSchema = v.object({
-	streamUrl: v.string(),
-	offset: v.string(),
-	submissionId: v.string(),
-});
-
-export const AgentInvocationResponseSchema = v.object({
-	result: v.unknown(),
-	streamUrl: v.string(),
-	offset: v.string(),
-	submissionId: v.string(),
-});
-
-export const WorkflowAdmissionResponseSchema = v.object({
-	runId: v.string(),
-});
-
-export const WorkflowInvocationResponseSchema = v.object({
-	result: v.unknown(),
-	runId: v.string(),
-});
-
 export const WorkflowRouteParamSchema = v.object({ name: v.string() });
 /** Shared `?wait` query contract for agent and workflow invocation routes. */
 export const InvocationQuerySchema = v.object({

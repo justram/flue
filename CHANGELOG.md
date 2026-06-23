@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.0-beta.3 - 2026-06-22
+
 ### Breaking Changes
 
 - **The incomplete public `/openapi.json` route is removed.** It described only agent and workflow invocation while omitting Durable Streams reads, run metadata, and channels, so it was not a reliable contract for the mounted public API. Use the documented HTTP routes or `@flue/sdk`; a public OpenAPI document may return once it can describe the complete surface accurately.
@@ -35,6 +37,7 @@
 - Workflow execution now validates input before initializing the agent or sandbox, waits for active operations to settle before terminal run persistence, and compensates failed stream or scheduler admission so runs are not left active indefinitely.
 - Fixed Cloudflare sandbox shell calls failing before execution because an `AbortSignal` was sent across the Durable Object RPC boundary.
 - OpenTelemetry now projects complete Flue workflow, agent, inference, delegated-task, and tool execution into pinned GenAI semantics with persistent session conversation IDs, active trace context, provider and usage metadata, metrics, exception Logs, and documented `flue.*` extensions. Content capture uses one default-off global policy with a detached transform, deterministic structural and UTF-8 byte limits, independent external delivery, safe diagnostics, and bounded truncation/omission markers. Provider inference spans exclude local tool latency, compaction calls activate their own chat spans, workflow recovery creates a new trace segment, and caller shell execution has one active Flue-owned span. Generated Node applications dispose instrumentation during shutdown and reload. The GenAI projection revision is 5 and Flue telemetry extension revision is 3; the pinned semantic-convention revision and schema are unchanged.
+- Updated `@earendil-works/pi-ai` and `@earendil-works/pi-agent-core` to 0.79.10.
 
 ## 1.0.0-beta.2 - 2026-06-17
 

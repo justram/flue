@@ -54,6 +54,7 @@ const WORKERS_AI_COMPAT: Required<Omit<OpenAICompletionsCompat, 'cacheControlFor
 	requiresThinkingAsText: false,
 	requiresReasoningContentOnAssistantMessages: false,
 	thinkingFormat: 'openai',
+	chatTemplateKwargs: {},
 	openRouterRouting: {},
 	vercelGatewayRouting: {},
 	zaiToolStream: false,
