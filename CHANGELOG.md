@@ -22,6 +22,7 @@
 
 ### New Features
 
+- `useFlueAgent()` now accepts a `live` option so React clients can select SSE or long-poll Durable Streams transport.
 - Actions now serve as reusable finite orchestration for both workflows and model tools, with invocation-scoped harnesses, strict JSON output serialization, and one execution path for schema validation and transformed values.
 - Agent definitions can expose Actions through `actions`. Model-invoked Actions run as framework-owned tools in isolated child scopes while sharing the parent policy, sandbox, filesystem, and environment. Action sessions are retained with their parent, recursively deleted, cancellation-aware, and governed by the same mixed Action/Task delegation-depth limit.
 - Added top-level `invoke(workflow, { input })` for admitting discovered workflow definitions programmatically. It returns `{ runId }` after real run and event-stream admission, does not wait for completion, bypasses route middleware, supports route-free workflows, and preserves Node and Cloudflare's existing execution topology.

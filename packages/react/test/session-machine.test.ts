@@ -106,6 +106,40 @@ afterEach(() => {
 });
 
 describe('AgentSession', () => {
+	it('uses the configured SSE transport for initial and resumed streams', async () => {
+		vi.useFakeTimers();
+		const first = streamThenFail<AttachedAgentEvent>(
+			{
+				v: 3,
+				type: 'message_end',
+				message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+				eventIndex: 1,
+				timestamp: '2026-06-12T00:00:00.000Z',
+				instanceId: 'id',
+				turnId: 'turn-1',
+			} as AttachedAgentEvent,
+			new Error('disconnected'),
+			'offset-1',
+		);
+		const second = pendingStream<AttachedAgentEvent>('offset-1');
+		const stream = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
+		const session = new AgentSession(
+			client({ agents: { stream } as unknown as FlueClient['agents'] }),
+			'agent',
+			'id',
+			100,
+			'sse',
+		);
+
+		session.start();
+		await settle();
+		await vi.runAllTimersAsync();
+
+		expect(stream.mock.calls[0]?.[2]).toMatchObject({ live: 'sse', offset: '-1', tail: 100 });
+		expect(stream.mock.calls[1]?.[2]).toMatchObject({ live: 'sse', offset: 'offset-1' });
+		session.dispose();
+	});
+
 	it('restarts after a StrictMode setup cleanup setup cycle', async () => {
 		const stream = vi.fn(() => pendingStream<AttachedAgentEvent>());
 		const session = new AgentSession(

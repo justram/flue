@@ -82,7 +82,7 @@ export function Chat({ conversationId }: { conversationId: string }) {
 
 Messages use a parts-based shape for text, reasoning, tool activity, and images. This shape mirrors AI SDK v5 `UIMessage`, but `@flue/react` neither depends on `ai` at runtime nor implements its transport protocol.
 
-By default, the hook rebuilds a transcript from the latest 100 server events rather than browser storage. Pass `history: 'all'` when the complete transcript is required. Streaming deltas provide best-effort live progress, while `message_end` supplies the authoritative completed assistant message. If the hook attaches after generation starts, earlier partial output may be absent until `message_end` arrives. This delivery behavior does not affect the runtime's internal interrupted-turn recovery.
+By default, the hook rebuilds a transcript from the latest 100 server events rather than browser storage. Pass `history: 'all'` when the complete transcript is required. It follows live events with Durable Streams long-polling by default; pass `live: 'sse'` to use one SSE connection instead. Streaming deltas provide best-effort live progress, while `message_end` supplies the authoritative completed assistant message. If the hook attaches after generation starts, earlier partial output may be absent until `message_end` arrives. This delivery behavior does not affect the runtime's internal interrupted-turn recovery.
 
 ## Observe a workflow run
 

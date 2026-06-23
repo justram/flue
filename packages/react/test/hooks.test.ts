@@ -43,6 +43,24 @@ function client(overrides: Partial<FlueClient>): FlueClient {
 }
 
 describe('useFlueAgent()', () => {
+	it('forwards the configured live transport to the agent stream', async () => {
+		const stream = pendingStream<AttachedAgentEvent>();
+		const connect = vi.fn(() => stream);
+		const flue = client({ agents: { stream: connect } as unknown as FlueClient['agents'] });
+		const { unmount } = renderHook(() =>
+			useFlueAgent({ name: 'agent', id: 'id', live: 'sse', client: flue }),
+		);
+
+		await waitFor(() => expect(connect).toHaveBeenCalled());
+
+		expect(connect).toHaveBeenCalledWith('agent', 'id', {
+			live: 'sse',
+			offset: '-1',
+			tail: 100,
+		});
+		unmount();
+	});
+
 	it('stays dormant without an id while validating a client override', () => {
 		const flue = client({});
 		const { result } = renderHook(() => useFlueAgent({ name: 'agent', client: flue }));

@@ -53,6 +53,7 @@ interface UseFlueAgentOptions {
   name: string;
   id?: string;
   history?: number | 'all';
+  live?: true | 'long-poll' | 'sse';
   client?: FlueClient;
 }
 ```
@@ -64,6 +65,7 @@ Connects to one persistent agent instance, reconstructs its transcript, and foll
 | `name`    | Agent module name.                                                             |
 | `id`      | Agent instance ID. Omit to keep the hook dormant.                              |
 | `history` | Positive integer event limit. Defaults to `100`; use `'all'` for full history. |
+| `live`    | Live stream mode. Defaults to `true` (long-poll); use `'sse'` for SSE.           |
 | `client`  | SDK client override.                                                           |
 
 ```ts
@@ -195,7 +197,7 @@ Transient failures remain `connecting` and retry from the durable checkpoint. `4
 
 Hooks return empty, idle server snapshots and connect only after React commits in the browser. React Strict Mode effect replay is supported.
 
-Changing the client, agent name, agent ID, history, or workflow run ID replaces the current observer. Unmounting stops local observation but not server-side work.
+Changing the client, agent name, agent ID, history, live stream mode, or workflow run ID replaces the current observer. Unmounting stops local observation but not server-side work.
 
 ## Re-exported types
 

@@ -4,6 +4,7 @@ import {
 	FetchError,
 	type FlueClient,
 	type FlueEventStream,
+	type LiveMode,
 } from '@flue/sdk';
 import {
 	type AgentReducerEvent,
@@ -39,6 +40,7 @@ export class AgentSession {
 		private name: string,
 		private id: string,
 		private history: AgentHistory = 100,
+		private live: LiveMode = true,
 	) {}
 
 	start(): void {
@@ -93,10 +95,10 @@ export class AgentSession {
 		if (!this.isCurrent(generation) || this.stream || this.dormantFresh) return;
 		this.dispatch({ type: 'local_connecting', error: this.snapshot.error });
 		const options = this.reconnectOffset
-			? { live: true as const, offset: this.reconnectOffset }
+			? { live: this.live, offset: this.reconnectOffset }
 			: this.history === 'all'
-				? { live: true as const, offset: '-1' }
-				: { live: true as const, offset: '-1', tail: this.history };
+				? { live: this.live, offset: '-1' }
+				: { live: this.live, offset: '-1', tail: this.history };
 		let stream: FlueEventStream;
 		try {
 			stream = this.client.agents.stream(this.name, this.id, options);
