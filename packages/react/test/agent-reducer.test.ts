@@ -133,6 +133,44 @@ describe('reduceAgentEvent()', () => {
 		expect(state.messages[0]?.id).toBe('local-1');
 	});
 
+	it('re-keys only the user message of a submission, not its assistant turns', () => {
+		let state = reduceAgentEvent(emptyAgentState, observed(conversation()));
+		state = reduceAgentEvent(state, {
+			type: 'local_send_submitted',
+			localId: 'local-1',
+			message: 'hello',
+		});
+		state = reduceAgentEvent(state, {
+			type: 'local_send_admitted',
+			localId: 'local-1',
+			submissionId: 'submission-1',
+		});
+		state = reduceAgentEvent(
+			state,
+			observed(
+				conversation([
+					{
+						id: 'entry-user',
+						role: 'user',
+						submissionId: 'submission-1',
+						parts: [{ type: 'text', text: 'hello', state: 'done' }],
+					},
+					{
+						id: 'entry-assistant',
+						role: 'assistant',
+						submissionId: 'submission-1',
+						parts: [{ type: 'text', text: 'hi', state: 'done' }],
+					},
+				]),
+			),
+		);
+
+		// The user row re-keys to the optimistic local id, but the assistant turn
+		// shares the same submissionId and must keep its own id — otherwise both
+		// messages collapse onto one id and break keyed rendering.
+		expect(state.messages.map((message) => message.id)).toEqual(['local-1', 'entry-assistant']);
+	});
+
 	it('reconciles the optimistic message when the canonical transcript arrives before admission', () => {
 		let state = reduceAgentEvent(emptyAgentState, {
 			type: 'local_send_submitted',

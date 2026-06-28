@@ -154,11 +154,17 @@ function converge(state: AgentState): AgentState {
 		state.localMessageIds.map((entry) => [entry.submissionId, entry.localId] as const),
 	);
 
-	// Re-key each canonical message that originated from a local send back to the
-	// id its optimistic echo used, so the rendered row is stable across the
-	// optimistic→confirmed swap.
+	// Re-key the canonical user message that originated from a local send back to
+	// the id its optimistic echo used, so the rendered row is stable across the
+	// optimistic→confirmed swap. Only the user message adopts the optimistic id:
+	// a submission's assistant turns share the same submissionId but must keep
+	// their own ids, otherwise the user and assistant rows collide on one React
+	// key and the latest assistant message visibly duplicates.
 	const canonical = (conversation?.messages ?? []).map((message) => {
-		const localId = message.submissionId ? localIdBySubmissionId.get(message.submissionId) : undefined;
+		const localId =
+			message.role === 'user' && message.submissionId
+				? localIdBySubmissionId.get(message.submissionId)
+				: undefined;
 		return localId ? { ...message, id: localId } : message;
 	});
 	const canonicalSubmissionIds = new Set(
