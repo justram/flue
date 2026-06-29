@@ -34,6 +34,15 @@ type WriterLifecycle =
 	| { status: 'active' }
 	| { status: 'failed'; error: unknown };
 
+/**
+ * How long streamed deltas are coalesced before being appended to the durable
+ * stream. The timer only governs mid-block streaming cadence — block boundaries
+ * and message completion flush immediately. Lower = smoother live streaming
+ * (deltas reach observers sooner, in smaller batches) at the cost of more
+ * durable writes; higher = fewer writes but burstier streaming.
+ */
+const CANONICAL_FLUSH_DELAY_MS = 1000;
+
 export class ConversationRecordWriter {
 	private lifecycle: WriterLifecycle = { status: 'active' };
 	private tail: Promise<void> = Promise.resolve();
@@ -150,7 +159,7 @@ export class ConversationRecordWriter {
 			});
 			this.pendingTimer ??= setTimeout(() => {
 				void this.flush().catch(() => {});
-			}, 3000);
+			}, CANONICAL_FLUSH_DELAY_MS);
 			return this.pendingFlush;
 		} catch (error) {
 			return Promise.reject(error);

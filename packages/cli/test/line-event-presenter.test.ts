@@ -6,9 +6,9 @@ describe('createLineEventPresenter()', () => {
 		const lines: string[] = [];
 		const presenter = createLineEventPresenter({ write: (line) => lines.push(line) });
 
-		presenter.present({ type: 'message-delta', conversationId: 'c1', messageId: 'a1', kind: 'text', delta: 'hello' });
-		presenter.present({ type: 'tool-input', conversationId: 'c1', messageId: 'a1', toolCallId: 't1', toolName: 'bash', input: {} });
-		presenter.present({ type: 'tool-output', conversationId: 'c1', toolCallId: 't1', output: {} });
+		presenter.present({ type: 'message-delta', conversationId: 'c1', messageId: 'a1', kind: 'text', delta: 'hello', position: { batch: 1, index: 0 } });
+		presenter.present({ type: 'tool-input', conversationId: 'c1', messageId: 'a1', toolCallId: 't1', toolName: 'bash', input: {}, position: { batch: 2, index: 0 } });
+		presenter.present({ type: 'tool-output', conversationId: 'c1', toolCallId: 't1', output: {}, position: { batch: 3, index: 0 } });
 
 		expect(lines).toEqual(['  hello', 'tool bash', 'tool done bash']);
 	});

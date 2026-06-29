@@ -18,6 +18,7 @@ import type {
 	ConversationStreamReadResult,
 	ConversationStreamStore,
 } from './conversation-stream-store.ts';
+import { parseOffset } from './event-stream-store.ts';
 
 const SECURITY_HEADERS = {
 	'X-Content-Type-Options': 'nosniff',
@@ -184,6 +185,7 @@ function projectRead(
 				state,
 				previousState,
 				records: batch.records,
+				batchOrdinal: parseOffset(batch.offset),
 			}),
 		);
 		offset = batch.offset;

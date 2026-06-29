@@ -2,28 +2,26 @@ import type { BackoffOptions } from '@durable-streams/client';
 import type { FlueConversationSnapshot, FlueConversationState } from './conversation.ts';
 import {
 	applyConversationChunk,
+	type ConversationChunkPosition,
 	type ConversationStreamChunk,
 	createConversationStreamState,
 } from './conversation-stream.ts';
 import type { FlueEventStream } from './stream.ts';
 
 /**
- * Live mode for conversation observation: always long-poll. `true` and
- * `'long-poll'` are equivalent; there is intentionally no one-shot or SSE mode.
- * For a single point-in-time read with no live updates, use
+ * Live mode for conversation observation: `'long-poll'` (offset-resumed polling)
+ * or `'sse'` (a long-lived stream for lower-latency token-by-token updates). For
+ * a single point-in-time read with no live updates, use
  * `client.agents.history()` instead.
  *
- * The `message-delta` protocol is append-style with no per-delta sequence: a
- * delta extends the current streaming part. Correct application therefore
- * requires the transport to deliver each batch atomically with its resume
- * offset, so a reconnect never re-delivers a batch that was already applied.
- * Long-poll satisfies this — each batch arrives with its `Stream-Next-Offset` in
- * one response. SSE does not: it splits a batch across `data` and `control`
- * frames, and the durable-stream client transparently reconnects from the
- * pre-batch offset if the connection drops between them, re-delivering (and thus
- * double-applying) the batch — so SSE is excluded.
+ * Both modes are safe under at-least-once redelivery. The `message-delta`
+ * protocol is append-style with no per-delta sequence, but every chunk carries a
+ * monotonic `position`, and `observe()` drops chunks at or below the last applied
+ * position. This makes SSE safe despite the durable-stream client re-delivering a
+ * batch when a connection drops between its `data` and `control` frames (it
+ * reconnects from the pre-batch offset and replays).
  */
-export type ConversationLiveMode = true | 'long-poll';
+export type ConversationLiveMode = 'long-poll' | 'sse';
 
 export type AgentConversationObservationPhase =
 	| 'loading'
@@ -89,6 +87,12 @@ export function createAgentConversationObservation(
 	let stream: FlueEventStream<ConversationStreamChunk> | undefined;
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 	let reconnectAttempt = 0;
+	// Highest chunk position applied to `streamState`. Chunks at or below it are
+	// redeliveries (e.g. an SSE reconnect replaying a batch) and are skipped so
+	// append-style deltas are never double-applied. Reset on every (re)hydrate:
+	// conversation reads are exclusive, so live chunks are always strictly after
+	// the freshly materialized snapshot, leaving nothing to dedupe against it.
+	let lastApplied: ConversationChunkPosition | undefined;
 
 	const publish = (next: AgentConversationObservationSnapshot) => {
 		snapshot = next;
@@ -108,12 +112,12 @@ export function createAgentConversationObservation(
 		retryTimer = undefined;
 	};
 
-	// Every reconnect rehydrates a fresh snapshot rather than resuming the
-	// incremental stream. Streaming deltas append to the current part without a
-	// per-delta sequence, so resuming after a batch-granular offset could
-	// re-apply a redelivered batch; a clean snapshot reset makes application
-	// exactly-once. This mirrors the durable-stream reference (reset/refetch on
-	// reconnect) and is cheap because `history()` is server-materialized.
+	// On reconnect we rehydrate a fresh snapshot via `history()` rather than
+	// resuming the incremental stream — cheap because it is server-materialized,
+	// and it re-bases `lastApplied`. Exactly-once application within a live
+	// connection is enforced separately by the per-chunk `position` dedup in
+	// `follow()`, which also absorbs the durable-stream client's mid-batch SSE
+	// redelivery.
 	const scheduleRetry = (value: number, error: Error) => {
 		if (!isCurrent(value)) return;
 		if (controller?.signal.aborted) {
@@ -153,7 +157,15 @@ export function createAgentConversationObservation(
 			for await (const chunk of nextStream) {
 				if (!isCurrent(value) || stream !== nextStream) return;
 				if (!streamState) throw new Error('Agent conversation updates require materialized state.');
+				// Drop redelivered chunks (at-least-once transports replay the
+				// in-flight batch on reconnect). Positions are monotonic but not
+				// contiguous — zero-chunk batches leave gaps — so this only
+				// compares, never asserts contiguity.
+				if (lastApplied !== undefined && comparePosition(chunk.position, lastApplied) <= 0) {
+					continue;
+				}
 				streamState = applyConversationChunk(streamState, chunk);
+				lastApplied = chunk.position;
 				publish({
 					conversation: streamState,
 					offset: nextStream.offset,
@@ -179,6 +191,7 @@ export function createAgentConversationObservation(
 			const history = await source.history({ signal: controller?.signal });
 			if (!isCurrent(value)) return;
 			streamState = createConversationStreamState(history);
+			lastApplied = undefined;
 			reconnectAttempt = 0;
 			publish({
 				conversation: streamState,
@@ -276,4 +289,9 @@ function isFatalStatus(error: unknown): boolean {
 
 function toError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
+}
+
+/** Lexicographic order on chunk positions: by `batch`, then `index`. */
+function comparePosition(a: ConversationChunkPosition, b: ConversationChunkPosition): number {
+	return a.batch !== b.batch ? a.batch - b.batch : a.index - b.index;
 }

@@ -29,7 +29,7 @@ export class AgentSession {
 		private client: FlueClient,
 		private name: string,
 		private id: string,
-		private live: ConversationLiveMode = true,
+		private live: ConversationLiveMode = 'sse',
 	) {}
 
 	start(): void {

@@ -26,7 +26,10 @@ export interface UseFlueAgentResult extends AgentSnapshot {
 
 export function useFlueAgent(options: UseFlueAgentOptions): UseFlueAgentResult {
 	const client = useResolvedFlueClient(options.client);
-	const live = options.live ?? true;
+	// Default to SSE: lower-latency token-by-token streaming for chat UIs.
+	// Safe because React consumes only via observe(), which dedupes redelivered
+	// chunks; the SDK transport falls back to long-poll if SSE can't stay open.
+	const live = options.live ?? 'sse';
 	const session = useMemo(
 		() => (options.id ? new AgentSession(client, options.name, options.id, live) : undefined),
 		[client, options.name, options.id, live],

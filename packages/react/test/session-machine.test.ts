@@ -29,7 +29,7 @@ describe('AgentSession', () => {
 		);
 
 		session.start();
-		expect(observe).toHaveBeenCalledWith('agent', 'id', { live: true });
+		expect(observe).toHaveBeenCalledWith('agent', 'id', { live: 'sse' });
 
 		observation.emit({
 			conversation: conversation([

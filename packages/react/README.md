@@ -53,7 +53,7 @@ interface UseFlueAgentOptions {
   name: string;
   id?: string;
   history?: number | 'all';
-  live?: true | 'long-poll' | 'sse';
+  live?: 'sse' | 'long-poll';
   client?: FlueClient;
 }
 ```
@@ -65,7 +65,7 @@ Connects to one persistent agent instance, reconstructs its transcript, and foll
 | `name`    | Agent module name.                                                             |
 | `id`      | Agent instance ID. Omit to keep the hook dormant.                              |
 | `history` | Positive integer event limit. Defaults to `100`; use `'all'` for full history. |
-| `live`    | Live stream mode. Defaults to `true` (long-poll); use `'sse'` for SSE.           |
+| `live`    | Live stream mode. Defaults to `'sse'`; use `'long-poll'` to disable SSE.        |
 | `client`  | SDK client override.                                                           |
 
 ```ts

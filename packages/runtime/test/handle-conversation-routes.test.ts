@@ -7,6 +7,7 @@ import {
 	handleAgentAttachmentRead,
 	handleAgentConversationRead,
 } from '../src/runtime/handle-conversation-routes.ts';
+import { parseOffset } from '../src/runtime/event-stream-store.ts';
 
 async function setup() {
 	const adapter = sqlite();
@@ -121,9 +122,13 @@ describe('handleAgentConversationRead()', () => {
 				`https://flue.test/agents/assistant/instance-1?view=updates&offset=${encodeURIComponent(start)}`,
 			),
 		});
-		const updates = await response.json();
+		const updates = (await response.json()) as Array<{ position: unknown }>;
 
 		expect(updates).toHaveLength(1);
+		// Each chunk is stamped with its position: the batch ordinal it was
+		// projected from (so consumers can dedupe redelivered batches) and its
+		// index within that batch's projection.
+		expect(updates[0]?.position).toEqual({ batch: parseOffset(tail), index: 0 });
 		expect(response.headers.get('Stream-Next-Offset')).toBe(tail);
 		await adapter.close?.();
 	});

@@ -206,6 +206,50 @@ describe('createFlueClient', () => {
 			});
 			observation.close();
 		});
+
+		it('applies fan-out chunks and dedupes a redelivered batch by position', async () => {
+			// started + two same-batch deltas (distinct index) + a later delta.
+			const original: ConversationStreamChunk[] = [
+				{ type: 'message-started', conversationId: 'c1', messageId: 'a1', position: { batch: 1, index: 0 } },
+				{ type: 'message-delta', conversationId: 'c1', messageId: 'a1', kind: 'text', delta: 'hel', position: { batch: 2, index: 0 } },
+				{ type: 'message-delta', conversationId: 'c1', messageId: 'a1', kind: 'text', delta: 'lo', position: { batch: 2, index: 1 } },
+			];
+			let updatesCalls = 0;
+			const client = createFlueClient({
+				baseUrl: 'https://flue.test',
+				fetch: async (input) => {
+					const url = new URL(typeof input === 'string' ? input : new Request(input).url);
+					if (url.searchParams.get('view') === 'history') {
+						return Response.json({ v: 1, conversationId: 'c1', offset: '0', messages: [], settlements: [] });
+					}
+					updatesCalls++;
+					if (updatesCalls === 1) {
+						return dsJsonResponse(original, { upToDate: false, nextOffset: '2' });
+					}
+					// Redelivery of the whole batch (as an SSE reconnect would replay)
+					// plus one genuinely new delta. The replayed chunks must be skipped.
+					return dsJsonResponse(
+						[
+							...original,
+							{ type: 'message-delta', conversationId: 'c1', messageId: 'a1', kind: 'text', delta: '!', position: { batch: 3, index: 0 } },
+						] satisfies ConversationStreamChunk[],
+						{ closed: true, nextOffset: '3' },
+					);
+				},
+			});
+
+			const observation = client.agents.observe('agent', 'id');
+			const settled = new Promise<void>((resolve) => {
+				observation.subscribe(() => {
+					const text = assistantText(observation.getSnapshot().conversation);
+					if (text.endsWith('!')) resolve();
+				});
+			});
+			await settled;
+
+			expect(assistantText(observation.getSnapshot().conversation)).toBe('hello!');
+			observation.close();
+		});
 	});
 
 	describe('agents.history()', () => {
@@ -459,9 +503,9 @@ describe('createFlueClient', () => {
 					offsets.push(url.searchParams.get('offset'));
 					return dsJsonResponse(
 						[
-							{ type: 'message-delta', conversationId: 'c1', messageId: 'a1', kind: 'text', delta: 'hello' },
-							{ type: 'submission-settled', conversationId: 'c1', submissionId: 'other', outcome: 'completed', result: { text: 'ignore' } },
-							{ type: 'submission-settled', conversationId: 'c1', submissionId: 'submission-1', outcome: 'completed', result: { text: 'done' } },
+							{ type: 'message-delta', conversationId: 'c1', messageId: 'a1', kind: 'text', delta: 'hello', position: { batch: 1, index: 0 } },
+							{ type: 'submission-settled', conversationId: 'c1', submissionId: 'other', outcome: 'completed', result: { text: 'ignore' }, position: { batch: 2, index: 0 } },
+							{ type: 'submission-settled', conversationId: 'c1', submissionId: 'submission-1', outcome: 'completed', result: { text: 'done' }, position: { batch: 3, index: 0 } },
 						] satisfies ConversationStreamChunk[],
 						{ closed: true },
 					);
@@ -494,6 +538,7 @@ describe('createFlueClient', () => {
 								submissionId: 'submission-1',
 								outcome: 'failed',
 								error: { name: 'Error', message: 'model unavailable' },
+								position: { batch: 1, index: 0 },
 							},
 						] satisfies ConversationStreamChunk[],
 						{ closed: true },
@@ -706,6 +751,17 @@ describe('createFlueClient', () => {
  * Build a DS-compliant JSON catch-up response. Used by stream tests to
  * simulate the server without a real DS server.
  */
+function assistantText(conversation: { messages: Array<{ id: string; parts: unknown[] }> } | undefined): string {
+	const message = conversation?.messages.find((entry) => entry.id === 'a1');
+	if (!message) return '';
+	return message.parts
+		.filter((part): part is { type: string; text: string } =>
+			typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'text',
+		)
+		.map((part) => part.text)
+		.join('');
+}
+
 function dsJsonResponse(
 	events: unknown[],
 	opts: { closed?: boolean; upToDate?: boolean; nextOffset?: string } = {},

@@ -36,7 +36,7 @@ export interface AgentConversationSnapshot {
  * canonical record schema is never exposed; these chunks describe only
  * UI-relevant conversation operations.
  */
-export type ConversationStreamChunk =
+type ConversationStreamChunkBody =
 	| { type: 'conversation-reset'; conversationId: string; snapshot: AgentConversationSnapshot }
 	| { type: 'message-appended'; conversationId: string; message: ConversationUiMessage }
 	| {
@@ -72,6 +72,19 @@ export type ConversationStreamChunk =
 			result?: unknown;
 			error?: unknown;
 	  };
+
+/**
+ * Monotonic ordering token stamped on every chunk. `batch` is the durable batch
+ * ordinal the chunk was projected from; `index` is the chunk's position within
+ * that batch's projection. Consumers compare it (lexicographically by `batch`
+ * then `index`) to dedupe chunks redelivered under at-least-once transports
+ * (e.g. an SSE reconnect). Opaque otherwise — do not interpret the numbers.
+ */
+type ConversationChunkPosition = { batch: number; index: number };
+
+export type ConversationStreamChunk = ConversationStreamChunkBody & {
+	position: ConversationChunkPosition;
+};
 
 // The public conversation API addresses exactly one conversation per agent
 // instance: the default harness/session root. An instance can hold other root
@@ -113,6 +126,8 @@ export function projectAgentConversationBatch(options: {
 	state: ReducedInstanceState;
 	previousState?: ReducedInstanceState;
 	records: readonly ConversationRecord[];
+	/** Durable batch ordinal these records were read at; stamped onto each chunk. */
+	batchOrdinal: number;
 }): ConversationStreamChunk[] {
 	const conversation =
 		selectRootConversation(options.state) ??
@@ -126,10 +141,28 @@ export function projectAgentConversationBatch(options: {
 	// record in it, so emitting per-record chunks too would double-apply.
 	if (relevant.some(requiresSnapshotReset)) {
 		const snapshot = projectAgentConversationSnapshot(options.state);
-		return snapshot ? [{ type: 'conversation-reset', conversationId, snapshot }] : [];
+		return snapshot
+			? withPositions([{ type: 'conversation-reset', conversationId, snapshot }], options.batchOrdinal)
+			: [];
 	}
 
-	return relevant.flatMap((record) => encodeRecord(record, conversationId, options.state));
+	return withPositions(
+		relevant.flatMap((record) => encodeRecord(record, conversationId, options.state)),
+		options.batchOrdinal,
+	);
+}
+
+/**
+ * Stamp each chunk with its position within the batch. Index is the chunk's
+ * order in the batch's projection (a single record may fan out to several
+ * chunks), so `{ batch, index }` is globally unique and monotonic across the
+ * conversation. This is the identity consumers dedupe on under redelivery.
+ */
+function withPositions(
+	bodies: ConversationStreamChunkBody[],
+	batch: number,
+): ConversationStreamChunk[] {
+	return bodies.map((body, index) => ({ ...body, position: { batch, index } }));
 }
 
 function requiresSnapshotReset(record: ConversationRecord): boolean {
@@ -140,7 +173,7 @@ function encodeRecord(
 	record: ConversationRecord,
 	conversationId: string,
 	state: ReducedInstanceState,
-): ConversationStreamChunk[] {
+): ConversationStreamChunkBody[] {
 	switch (record.type) {
 		case 'user_message':
 			return [
@@ -236,7 +269,7 @@ function encodeToolOutcome(
 	conversationId: string,
 	commit: Extract<ConversationRecord, { type: 'tool_results_committed' }>,
 	state: ReducedInstanceState,
-): ConversationStreamChunk[] {
+): ConversationStreamChunkBody[] {
 	const outcome = state.recordsById.get(outcomeId);
 	if (
 		outcome?.type !== 'tool_outcome' ||

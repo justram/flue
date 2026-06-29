@@ -20,19 +20,29 @@ import type {
  *
  * Streaming assistant content is carried by `message-delta`: a delta appends to
  * the message's current streaming part of the same `kind`, opening a new part on
- * the first delta or on a `kind` change. There is no per-part id or sequence —
- * `observe()` resolves any missed data by rehydrating a fresh snapshot, so
- * incremental application only ever runs once per delta on a live connection.
+ * the first delta or on a `kind` change. Each chunk carries a monotonic
+ * `position`; `observe()` applies chunks in order and drops any at or below the
+ * last applied position, so a redelivered batch (e.g. an SSE reconnect) never
+ * double-applies.
  */
+/**
+ * Monotonic ordering token stamped on every chunk by the runtime projection.
+ * `observe()` compares it (lexicographically by `batch` then `index`) to dedupe
+ * chunks redelivered under at-least-once transports (e.g. an SSE reconnect).
+ * Opaque otherwise — do not interpret the numbers.
+ */
+export type ConversationChunkPosition = { batch: number; index: number };
+
 export type ConversationStreamChunk =
-	| { type: 'conversation-reset'; conversationId: string; snapshot: FlueConversationSnapshot }
-	| { type: 'message-appended'; conversationId: string; message: FlueConversationMessage }
+	| { type: 'conversation-reset'; conversationId: string; snapshot: FlueConversationSnapshot; position: ConversationChunkPosition }
+	| { type: 'message-appended'; conversationId: string; message: FlueConversationMessage; position: ConversationChunkPosition }
 	| {
 			type: 'message-started';
 			conversationId: string;
 			messageId: string;
 			submissionId?: string;
 			model?: { provider: string; id: string };
+			position: ConversationChunkPosition;
 	  }
 	| {
 			type: 'message-delta';
@@ -40,6 +50,7 @@ export type ConversationStreamChunk =
 			messageId: string;
 			kind: 'text' | 'reasoning';
 			delta: string;
+			position: ConversationChunkPosition;
 	  }
 	| {
 			type: 'tool-input';
@@ -48,10 +59,11 @@ export type ConversationStreamChunk =
 			toolCallId: string;
 			toolName: string;
 			input: unknown;
+			position: ConversationChunkPosition;
 	  }
-	| { type: 'tool-output'; conversationId: string; toolCallId: string; output: unknown }
-	| { type: 'tool-output-error'; conversationId: string; toolCallId: string; errorText: string }
-	| { type: 'message-completed'; conversationId: string; messageId: string; usage?: PromptUsage }
+	| { type: 'tool-output'; conversationId: string; toolCallId: string; output: unknown; position: ConversationChunkPosition }
+	| { type: 'tool-output-error'; conversationId: string; toolCallId: string; errorText: string; position: ConversationChunkPosition }
+	| { type: 'message-completed'; conversationId: string; messageId: string; usage?: PromptUsage; position: ConversationChunkPosition }
 	| {
 			type: 'submission-settled';
 			conversationId: string;
@@ -59,6 +71,7 @@ export type ConversationStreamChunk =
 			outcome: 'completed' | 'failed' | 'aborted';
 			result?: unknown;
 			error?: unknown;
+			position: ConversationChunkPosition;
 	  };
 
 /**
@@ -102,6 +115,15 @@ export function assertConversationStreamChunk(value: ConversationStreamChunk): C
 	) {
 		throw new ConversationStreamError(
 			`Unsupported agent conversation chunk: ${JSON.stringify(value)}.`,
+		);
+	}
+	// `position` is the dedup identity `observe()` relies on; reject chunks that
+	// lack a valid one so a protocol/version mismatch fails loudly (triggering
+	// rehydrate) instead of silently disabling deduplication.
+	const position = (value as { position?: { batch?: unknown; index?: unknown } }).position;
+	if (!position || !Number.isFinite(position.batch) || !Number.isFinite(position.index)) {
+		throw new ConversationStreamError(
+			`Agent conversation chunk is missing a valid position: ${JSON.stringify(value)}.`,
 		);
 	}
 	return value;
@@ -208,21 +230,6 @@ function appendDelta(
 		if (index < 0) return messages;
 		const message = messages[index] as FlueConversationMessage;
 		const last = message.parts[message.parts.length - 1];
-		// A finalized text/reasoning block is terminal. A trailing `done`
-		// text/reasoning part is only reachable through `message-completed`
-		// (mid-stream the trailing block is always `streaming`, or a tool/kind
-		// boundary makes the last part a tool or a fresh streaming part), so a
-		// delta arriving against it is a post-completion redelivery. The live
-		// transport applies each delta exactly once (see observe.ts), so this
-		// never fires on a healthy connection; ignoring it keeps a redelivered
-		// batch from appending a duplicate completed part. Batch-level
-		// exactly-once delivery remains the transport's contract — the
-		// append protocol is intentionally not delta-idempotent before
-		// completion, where a legitimate repeat is indistinguishable from a
-		// replay.
-		if (last && (last.type === 'text' || last.type === 'reasoning') && last.state === 'done') {
-			return messages;
-		}
 		const parts = [...message.parts];
 		if (last && last.type === chunk.kind && last.state === 'streaming') {
 			parts[parts.length - 1] = { ...last, text: last.text + chunk.delta };

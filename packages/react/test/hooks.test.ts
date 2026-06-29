@@ -95,6 +95,17 @@ describe('useFlueAgent()', () => {
 		unmount();
 	});
 
+	it('defaults to sse live mode for smoother streaming when none is configured', async () => {
+		const observation = createFakeObservation();
+		const observe = vi.fn().mockReturnValue(observation);
+		const flue = client({ agents: { observe } as unknown as FlueClient['agents'] });
+		const { unmount } = renderHook(() => useFlueAgent({ name: 'agent', id: 'id', client: flue }));
+
+		await waitFor(() => expect(observe).toHaveBeenCalledTimes(1));
+		expect(observe).toHaveBeenCalledWith('agent', 'id', { live: 'sse' });
+		unmount();
+	});
+
 	it('stays dormant without an id while validating a client override', () => {
 		const flue = client({});
 		const { result } = renderHook(() => useFlueAgent({ name: 'agent', client: flue }));
