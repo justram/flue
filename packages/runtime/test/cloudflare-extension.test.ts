@@ -1,11 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import {
+	type CloudflareAgentLike,
 	type ExtensionClass,
 	extend,
 	resolveCloudflareExtension,
 } from '../src/cloudflare/extension.ts';
 
 class Agent {}
+
+interface ConsumerEnv {
+	readonly accountId: string;
+}
+
+type ConsumerDurableObject = DurableObject & CloudflareAgentLike;
+
+type ConsumerDurableObjectClass = new (
+	ctx: DurableObjectState,
+	env: ConsumerEnv,
+) => ConsumerDurableObject;
+
+function instrumentDurableObjectClass<TClass extends ConsumerDurableObjectClass>(
+	Class: TClass,
+): TClass {
+	return new Proxy(Class, {});
+}
+
+extend<ConsumerDurableObject>({
+	wrap(Final) {
+		const generatedClass: ConsumerDurableObjectClass = Final;
+		const instrumentedClass = instrumentDurableObjectClass(Final);
+		const durableObjectClass: ConsumerDurableObjectClass = instrumentedClass;
+		return instrumentedClass;
+	},
+});
 
 describe('resolveCloudflareExtension()', () => {
 	it('defaults omitted extension callbacks to identity operations for agents', () => {
@@ -72,7 +99,7 @@ describe('resolveCloudflareExtension()', () => {
 
 	it('rejects wrap callbacks that return unrelated classes for agents', () => {
 		const extension = resolveCloudflareExtension(
-			{ cloudflare: extend({ wrap: () => class {} }) },
+			{ cloudflare: extend({ wrap: (() => class {}) as never }) },
 			'assistant',
 			'Agent',
 		);
@@ -84,7 +111,11 @@ describe('resolveCloudflareExtension()', () => {
 
 	it('rejects wrap callbacks that return subclasses for agents', () => {
 		const extension = resolveCloudflareExtension(
-			{ cloudflare: extend({ wrap: (Final) => class extends Final {} }) },
+			{
+				cloudflare: extend({
+					wrap: ((Final: ExtensionClass) => class extends Final {}) as never,
+				}),
+			},
 			'assistant',
 			'Agent',
 		);
@@ -186,7 +217,7 @@ describe('resolveCloudflareExtension()', () => {
 
 	it('rejects wrap callbacks that return unrelated classes for workflows', () => {
 		const extension = resolveCloudflareExtension(
-			{ cloudflare: extend({ wrap: () => class {} }) },
+			{ cloudflare: extend({ wrap: (() => class {}) as never }) },
 			'my-workflow',
 			'Workflow',
 		);

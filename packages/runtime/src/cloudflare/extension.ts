@@ -36,8 +36,8 @@ export type ExtensionClass<TInstance extends object = CloudflareAgentLike> = new
 ) => TInstance;
 
 export interface CloudflareExtension<TBase extends object = CloudflareAgentLike> {
-	base?: (Base: ExtensionClass<TBase>) => ExtensionClass<TBase>;
-	wrap?: (Final: ExtensionClass<TBase>) => ExtensionClass<TBase>;
+	base?: <TClass extends ExtensionClass<TBase>>(Base: TClass) => ExtensionClass<TBase>;
+	wrap?: <TClass extends ExtensionClass<TBase>>(Final: TClass) => TClass;
 }
 
 interface BrandedCloudflareExtension extends CloudflareExtension<any> {
